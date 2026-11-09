@@ -1,0 +1,143 @@
+* { box-sizing: border-box; }
+/* hidden 属性必须真隐藏：写了 display:flex 之类的元素会盖掉它，
+   导致提示条在主屏幕下也一直显示、点了 ✕ 也关不掉 */
+[hidden] { display: none !important; }
+html, body { margin: 0; padding: 0; background: #111; color: #eee;
+  font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+  -webkit-tap-highlight-color: transparent;
+  /* 关掉浏览器自带的下拉刷新和横向回弹，改用自己的下拉刷新和右滑回上级
+     （只重拉列表，不整页重载） */
+  overscroll-behavior: none; }
+/* 底部没有固定栏了，只留一点呼吸空间（含 Home Indicator 安全区） */
+body { padding-bottom: calc(16px + env(safe-area-inset-bottom)); }
+
+/* ---------- 报错横幅：出问题时明说，不静悄悄空白 ---------- */
+.boot-error, .list-warning { background: #3a1d1d; color: #ffb4b4; font-size: 14px;
+  line-height: 1.6; padding: 12px 14px; border-bottom: 1px solid #5c2a2a;
+  word-break: break-all; }
+.boot-error { padding-top: calc(12px + env(safe-area-inset-top)); }
+.list-warning { background: #33270f; color: #ffd479; border-bottom: 1px solid #574410;
+  margin: 8px 12px 0; border-radius: 10px; border: 1px solid #574410; }
+
+/* ---------- 下拉刷新指示 ---------- */
+.ptr { position: fixed; top: 0; left: 0; right: 0; z-index: 15;
+  height: calc(52px + env(safe-area-inset-top));
+  padding-top: env(safe-area-inset-top);
+  padding-bottom: 14px;
+  display: flex; align-items: flex-end; justify-content: center;
+  background: #111; color: #999; font-size: 13px;
+  transform: translateY(-100%); pointer-events: none; }
+
+/* 右滑回上级时的提示：内容跟着手指右移，这颗 pill 在左边缘慢慢显现 */
+#page-content { will-change: transform; }
+.back-hint { position: fixed; left: 14px; top: 50%; transform: translateY(-50%);
+  z-index: 15; background: rgba(0,0,0,.65); color: #ffd479; font-size: 14px;
+  padding: 10px 14px; border-radius: 999px; opacity: 0;
+  transition: opacity .15s ease; pointer-events: none; }
+
+/* ---------- 顶部栏 ---------- */
+/* 视图切换：照片库 | 收藏夹，和筛选胶囊一个样式，当前选中的是金色 */
+.root-switch { display: flex; gap: 6px; margin-bottom: 8px; }
+.root-switch button { background: #1e1e20; color: #ccc; border: 1px solid #333336;
+  border-radius: 999px; padding: 7px 16px; font-size: 14px; font-weight: 600; }
+.root-switch button.active { background: #f5c518; color: #111; border-color: #f5c518;
+  font-weight: 700; }
+/* 顶栏必须留出状态栏安全区：加到主屏幕后页面顶到屏幕最上方，没有这行，
+   标题和筛选会被状态栏盖住、点不到 */
+.topbar { position: sticky; top: 0; z-index: 10; background: rgba(17,17,17,.96);
+  backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+  padding: calc(10px + env(safe-area-inset-top)) 14px 8px;
+  border-bottom: 1px solid #262628; }
+.crumbs { display: flex; align-items: center; gap: 2px; flex-wrap: wrap;
+  font-size: 17px; font-weight: 600; min-height: 26px; margin-bottom: 8px; }
+.crumbs button { background: none; border: none; color: #f5c518; font-size: 17px;
+  font-weight: 600; padding: 2px 4px; }
+.crumbs button.current { color: #eee; }
+.crumbs .sep { color: #666; font-size: 14px; padding: 0 1px; }
+.filters { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.filters button { background: #1e1e20; color: #ccc; border: 1px solid #333336;
+  border-radius: 999px; padding: 7px 13px; font-size: 14px; white-space: nowrap; }
+.filters button.active { background: #f5c518; color: #111; border-color: #f5c518;
+  font-weight: 700; }
+.count { font-size: 12px; color: #888; margin-top: 6px; }
+
+/* ---------- 添加到主屏幕提示 ---------- */
+.homescreen-hint { display: flex; gap: 10px; align-items: flex-start;
+  background: #1e1e20; border-bottom: 1px solid #262628; color: #ddd;
+  font-size: 13px; line-height: 1.5; padding: 10px 14px; }
+.homescreen-hint button { background: none; border: none; color: #888;
+  font-size: 14px; padding: 0 2px; flex-shrink: 0; }
+
+/* ---------- 文件夹：和照片网格一样的方块缩略图 ---------- */
+.folders { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+  gap: 6px; padding: 8px 12px 0; }
+.folder-tile { position: relative; aspect-ratio: 1; overflow: hidden;
+  border-radius: 10px; background: #1c1c1e; border: none; padding: 0;
+  cursor: pointer; }
+.folder-tile img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.folder-tile .fic { display: flex; align-items: center; justify-content: center;
+  width: 100%; height: 100%; font-size: 40px; }
+.folder-tile .flabel { position: absolute; left: 0; right: 0; bottom: 0;
+  padding: 16px 8px 6px; display: flex; flex-direction: column; gap: 1px;
+  background: linear-gradient(transparent, rgba(0,0,0,.7));
+  color: #eee; text-align: left; }
+.folder-tile .fname { font-size: 13px; font-weight: 600;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.folder-tile .fprog { position: absolute; left: 0; right: 0; bottom: 0; height: 3px;
+  background: rgba(255,255,255,.18); z-index: 2; }
+.folder-tile .fprog-fill { display: block; height: 100%; background: #f5c518; }
+.folder-tile .fprog-fill.done { background: #3fae6a; }  /* 看完了变绿 */
+.folder-tile.viewed img { opacity: .45; }
+.folder-tile:active { opacity: .8; }
+
+/* ---------- 照片网格 ---------- */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+  gap: 6px; padding: 8px 12px; }
+.tile { position: relative; aspect-ratio: 1; overflow: hidden; border-radius: 10px;
+  background: #1e1e20; cursor: pointer; }
+.tile img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.tile.saved { outline: 2px solid #3fae6a; outline-offset: -2px; }
+.tile.viewed img { opacity: .45; }
+.tile.resume { outline: 2px solid #fff; outline-offset: -2px; }
+
+.empty { text-align: center; color: #888; padding: 60px 20px; font-size: 15px; }
+
+/* ---------- 提示气泡（要盖过看图器，所以 z-index 比 PhotoSwipe 高） ---------- */
+.toast { position: fixed; left: 50%; bottom: 76px; transform: translateX(-50%);
+  background: #222; color: #eee; border: 1px solid #444; border-radius: 999px;
+  padding: 9px 18px; font-size: 14px; z-index: 3000; white-space: nowrap; }
+
+/* ---------- 看图器：底部进度条 + 已保存圆点 ---------- */
+/* 看图器顶部没有任何按钮了（上滑保存、下滑关闭），底部只留这一条指示 */
+.viewer-progress { position: absolute; left: 0; right: 0;
+  bottom: calc(20px + env(safe-area-inset-bottom)); z-index: 30;
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+  pointer-events: none; }
+.vp-track { width: 140px; height: 3px; border-radius: 999px;
+  background: rgba(255,255,255,.28); overflow: hidden; }
+.vp-fill { height: 100%; border-radius: 999px;
+  background: linear-gradient(90deg, #f5c518, #ffe27a);
+  box-shadow: 0 0 8px rgba(245,197,24,.55);
+  transition: width .25s ease; }
+.vp-dot { width: 8px; height: 8px; border-radius: 50%; background: #f5c518;
+  box-shadow: 0 0 8px rgba(245,197,24,.9); flex-shrink: 0; }
+
+/* ---------- 看图器：上滑保存的中央 ✓ 反馈 ---------- */
+/* 上滑过程中 ✓ 随拉动距离慢慢显现，松手存下后弹一下再消失，不会再以为没反应 */
+.save-pop { position: absolute; left: 50%; top: 50%; z-index: 40;
+  width: 76px; height: 76px; border-radius: 50%;
+  background: rgba(0,0,0,.55); color: #f5c518;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 38px; pointer-events: none;
+  transform: translate(-50%,-50%); opacity: 0;
+  transition: opacity .18s ease; }
+.save-pop.popped { animation: savePop .7s ease forwards; }
+@keyframes savePop {
+  0% { opacity: 0; transform: translate(-50%,-50%) scale(.6); }
+  25% { opacity: 1; transform: translate(-50%,-50%) scale(1.08); }
+  60% { opacity: 1; transform: translate(-50%,-50%) scale(1); }
+  100% { opacity: 0; transform: translate(-50%,-50%) scale(1); }
+}
+
+/* 看图器不要留顶栏：PhotoSwipe 默认顶栏已不用，这里把可能残留的顶栏藏掉 */
+.pswp__top-bar { display: none !important; }

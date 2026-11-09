@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#111111">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="看图">
+<link rel="apple-touch-icon" href="/static/icon.png">
+<title>看图</title>
+<link rel="stylesheet" href="/static/vendor/photoswipe.css">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div id="boot-error" class="boot-error" hidden></div>
+<div id="ptr" class="ptr" aria-hidden="true"><span id="ptr-text">↓ 下拉刷新</span></div>
+<div id="back-hint" class="back-hint" aria-hidden="true">‹ 上级目录</div>
+
+<header class="topbar">
+  <div class="root-switch" role="group" aria-label="视图">
+    <button data-root="photos" class="active">照片库</button>
+    <button data-root="saved">收藏夹</button>
+  </div>
+  <div class="crumbs" id="crumbs"></div>
+  <div class="filters" role="group" aria-label="筛选" hidden>
+    <button data-filter="all" class="active">全部</button>
+    <button data-filter="unviewed">未看过</button>
+    <button data-filter="viewed">已看过</button>
+    <button data-filter="saved">已保存</button>
+  </div>
+  <div id="count" class="count" hidden></div>
+</header>
+
+<div id="homescreen-hint" class="homescreen-hint" hidden>
+  <span>想全屏看图：点分享 <b>↗</b> → 添加到主屏幕，再从主屏幕打开就是全屏了（Safari 里开网页不能全屏）。</span>
+  <button id="homescreen-dismiss" aria-label="关闭">✕</button>
+</div>
+
+<main id="page-content">
+  <div id="list-warning" class="list-warning" hidden></div>
+  <div id="folders" class="folders"></div>
+  <div id="grid" class="grid"></div>
+  <div id="empty" class="empty">加载中…</div>
+</main>
+
+<div id="toast" class="toast" hidden></div>
+
+<script>
+  // 启动自检：如果主脚本 4 秒内没跑起来（比如浏览器缓存了旧文件导致加载失败），
+  // 直接在页面上把原因写出来，而不是静悄悄一片空白。
+  setTimeout(function () {
+    if (!window.__cullerReady) {
+      var el = document.getElementById('boot-error');
+      el.hidden = false;
+      el.textContent = '页面脚本没有加载成功，可能是浏览器缓存了旧文件。请用无痕浏览打开一次，或在设置 → Safari → 清除历史记录与网站数据后重试。如果一直这样，把这行字截给我。';
+    }
+  }, 4000);
+  window.addEventListener('error', function (e) {
+    if (!window.__cullerReady) {
+      var el = document.getElementById('boot-error');
+      el.hidden = false;
+      el.textContent = '脚本出错：' + (e.message || e.type) + '。请把这行字截给我。';
+    }
+  });
+</script>
+<script type="module" src="/static/app.js"></script>
+</body>
+</html>
