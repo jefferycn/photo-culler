@@ -6,7 +6,9 @@
 - 每轮拉 ``popular_by_day.json``（今天、昨天；往前 2-4 天只在对应日期文件夹
   不存在或为空时才回填）和 ``popular_recent.json``，图按 ``<id>.jpg`` 存到
   ``PHOTOS_DIR/<Y-m-d>/``（东京日期，和原来 ``/media/yandere/<Y-m-d>/`` 一样）。
-- 去重靠已抓 id 记录 + 文件已存在就跳过。
+- 去重按 id 全局算（和 i.php 的 retrievedIds 一个意思）：一个 id 只下一次，
+  存到它第一次出现的那天文件夹里；之后在别的榜单里再出现就跳过。
+  只有当初存的那个文件后来被删了，才会重新下载。
 
 相对 i.php 改掉的、也是原来被限流最可疑的几点：
 - 请求之间有间隔（列表 2 秒、图片 1.5 秒，各加 0-1 秒随机抖动），全程串行，
@@ -36,7 +38,7 @@ try:
 except Exception:  # 容器里没装 tzdata 时退回固定 UTC+9，和东京时间一样
     _TOKYO = timezone(timedelta(hours=9))
 
-USER_AGENT = "photo-culler/1.20"
+USER_AGENT = "photo-culler/1.21"
 BASE_URL = "https://yande.re"
 MIN_IMAGE_BYTES = 10 * 1024  # 小于 10KB 的“图”基本是错误页，拒收
 SEEN_KEEP_DAYS = 45  # 已抓记录只留 45 天，定期清理
@@ -226,9 +228,16 @@ def run_round(photos_dir, state_path, *, base_url=BASE_URL,
                 stats["failed"] += 1
                 continue
             dest = folder / f"{pid}.jpg"
-            if pid in seen and dest.is_file():
-                stats["skipped"] += 1
-                continue
+            seen_day = seen.get(pid)
+            if isinstance(seen_day, str):
+                # 全局去重（和 i.php 的 retrievedIds 一个意思）：这个 id 以前抓过，
+                # 不管在哪天的榜单里，只要当初存的那个文件还在，就不再重复下；
+                # 文件要是后来被删了，就当没抓过，重新下到当前这天的文件夹里。
+                # v1.20 的 bug 是只看当天文件夹里有没有这个文件，所以同一张图
+                # 在 11/8 榜单里出现过、11/9 又出现，就在两个文件夹各存了一份。
+                if (photos_dir / seen_day / f"{pid}.jpg").is_file():
+                    stats["skipped"] += 1
+                    continue
             if dest.is_file():  # 状态文件丢了也能靠文件去重
                 seen[pid] = day.isoformat()
                 stats["skipped"] += 1

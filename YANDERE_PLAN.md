@@ -92,7 +92,9 @@ BotUserAgent”，Kodehawa 的说明是“默认 UA
 （gallery-dl 对 429 的默认等待就是 60 秒）；
 退避 3 次还不行就**停下本轮、记下状态、等下一轮**，绝不紧循环重试。
 其它 4xx/5xx、超时：单张失败只记下来、继续下一张，不杀整轮。
-- 去重：本轮内用 set；跨轮用 `data/yandere.json` + `file_exists` 双重检查；
+- 去重：按 id 全局算（v1.21 修正；v1.17–v1.20 是按天文件夹去重，同一张图会在多天各存一份）。
+  `data/yandere.json` 里记 `id -> 存入的日期`，一个 id 只下载一次，存到它第一次出现的
+  那天文件夹里；之后在别的榜单里再出现，只要当初存的文件还在就跳过；文件被删了才重新下载。
 已抓记录只保留 45 天内的，定期清理（和 `clean_thumb_cache` 一个思路）。
 - 下载校验：HTTP 200 + `Content-Type` 是图片 + 大小 > 10KB + JPEG 文件头尾
 校验（有 Pillow 在，也可以 `Image.verify()`）；先写 `<id>.jpg.tmp`，
