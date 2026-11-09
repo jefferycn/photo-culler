@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Photo culler v1.18 — 在局域网里看 NAS 照片、加星、保存到指定目录。
+"""Photo culler v1.19 — 在局域网里看 NAS 照片、加星、保存到指定目录。
 
 用法（Docker，见 ../docker-compose.yml）或直接跑：
     PHOTOS_DIR=/path/to/photos DEST_DIR=/path/to/picks DATA_DIR=./data python3 server.py
@@ -43,7 +43,7 @@ DEST_DIR = Path(os.environ.get("DEST_DIR", "/dest")).resolve()
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data")).resolve()
 PORT = int(os.environ.get("PORT", "8080"))
 HOST = os.environ.get("HOST", "0.0.0.0")
-VERSION = "1.18"
+VERSION = "1.19"
 WARM_ON_START = os.environ.get("WARM_ON_START", "1") == "1"
 # yandere 抓图（v1.17）：原来 PHP 脚本 i.php 的逻辑，见 app/yandere.py。
 # 间隔默认 6 小时，全部可用 .env 控制；YANDERE_BASE_URL 只是测试用的覆盖

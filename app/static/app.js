@@ -536,6 +536,14 @@ function showList() {
   statusPage.hidden = true;
   statusBtn.classList.remove('active');
   syncRootSwitchUI();
+  // showStatus 藏起来的列表元素要在这里放回来：renderCrumbs/renderFolders/
+  // renderGrid 只填内容、不管 hidden，不放回来列表就一直空白（v1.18 的 bug）
+  foldersEl.hidden = false;
+  grid.hidden = false;
+  crumbsEl.hidden = false;
+  filtersEl.hidden = false;
+  countEl.hidden = false;
+  emptyEl.hidden = false;
   loadList();  // 从缓存恢复列表，不用重新拉
 }
 statusBtn.addEventListener('click', showStatus);
