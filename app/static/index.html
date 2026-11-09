@@ -22,6 +22,7 @@
   <div class="root-switch" role="group" aria-label="视图">
     <button data-root="photos" class="active">照片库</button>
     <button data-root="saved">收藏夹</button>
+    <button data-view="status">状态</button>
   </div>
   <div class="crumbs" id="crumbs"></div>
   <div class="filters" role="group" aria-label="筛选" hidden>
@@ -43,6 +44,13 @@
   <div id="folders" class="folders"></div>
   <div id="grid" class="grid"></div>
   <div id="empty" class="empty">加载中…</div>
+  <div id="status-page" class="status-page" hidden>
+    <div class="status-actions">
+      <button id="status-refresh">刷新</button>
+      <button id="status-run">立即抓图</button>
+    </div>
+    <div id="status-body"></div>
+  </div>
 </main>
 
 <div id="toast" class="toast" hidden></div>

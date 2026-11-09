@@ -61,6 +61,27 @@ body { padding-bottom: calc(16px + env(safe-area-inset-bottom)); }
   font-weight: 700; }
 .count { font-size: 12px; color: #888; margin-top: 6px; }
 
+/* ---------- 状态页（v1.18）：顶栏“状态”进去看服务器状态 ---------- */
+.status-page { padding: 12px 14px 20px; }
+.status-actions { display: flex; gap: 6px; margin-bottom: 12px; }
+.status-actions button { background: #1e1e20; color: #ccc; border: 1px solid #333336;
+  border-radius: 999px; padding: 7px 16px; font-size: 14px; font-weight: 600; }
+.status-actions button:disabled { opacity: .5; }
+.status-card { background: #1a1a1c; border: 1px solid #262628; border-radius: 12px;
+  padding: 2px 14px; margin-bottom: 12px; }
+.status-section { font-size: 13px; color: #888; margin: 4px 0 8px; }
+.status-row { display: flex; justify-content: space-between; gap: 12px;
+  padding: 9px 0; border-bottom: 1px solid #262628; font-size: 14px; }
+.status-row:last-child { border-bottom: none; }
+.status-row .k { color: #999; flex-shrink: 0; }
+.status-row .v { text-align: right; word-break: break-all; }
+.status-row .v.bad { color: #ffb4b4; }
+.status-row .v.good { color: #7fd6a0; }
+.status-errors { margin: 0 0 8px; padding-left: 18px; font-size: 13px;
+  color: #ffb4b4; line-height: 1.6; word-break: break-all; }
+.status-loading, .status-error { color: #888; font-size: 14px; padding: 12px 2px; }
+.status-error { color: #ffb4b4; }
+
 /* ---------- 添加到主屏幕提示 ---------- */
 .homescreen-hint { display: flex; gap: 10px; align-items: flex-start;
   background: #1e1e20; border-bottom: 1px solid #262628; color: #ddd;

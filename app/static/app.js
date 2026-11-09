@@ -405,9 +405,144 @@ function switchRoot(newRoot) {
 }
 
 document.querySelectorAll('.root-switch button[data-root]').forEach(btn => {
-  btn.addEventListener('click', () => switchRoot(btn.dataset.root));
+  btn.addEventListener('click', () => {
+    if (view === 'status') showList();
+    switchRoot(btn.dataset.root);
+  });
 });
 syncRootSwitchUI();
+
+// ---------- 状态页（v1.18）：顶栏“状态”进去看服务器状态 ----------
+// 状态页不是第三个照片视图，只是个查看页：不记 localStorage，不参与
+// 目录/筛选/滚动记忆；点回照片库/收藏夹就回到原来的列表。
+let view = 'list';  // 'list' | 'status'
+const statusPage = document.getElementById('status-page');
+const statusBody = document.getElementById('status-body');
+const statusRunBtn = document.getElementById('status-run');
+const statusBtn = document.querySelector('.root-switch button[data-view="status"]');
+let statusPollTimer = null;
+
+const esc = s => String(s).replace(/[&<>"']/g, c =>
+  ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+function fmtTime(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return isNaN(d) ? '—' : d.toLocaleString('zh-CN', { hour12: false });
+}
+function ago(iso) {
+  if (!iso) return '';
+  const mins = Math.max(0, Math.round((Date.now() - new Date(iso)) / 60000));
+  if (mins < 1) return '（刚刚）';
+  if (mins < 60) return `（${mins} 分钟前）`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `（${hours} 小时前）`;
+  return `（${Math.floor(hours / 24)} 天前）`;
+}
+function row(k, v, cls) {
+  return `<div class="status-row"><span class="k">${k}</span>` +
+    `<span class="v${cls ? ' ' + cls : ''}">${v}</span></div>`;
+}
+// 纯拼 HTML，好测：/api/yandere/status 长什么样，这里就原样显示什么。
+function renderStatusHTML(s) {
+  const st = s.last_stats;
+  const roundState = !st ? '还没跑过'
+    : st.aborted ? '中途停下（限流）'
+    : st.finished ? '已完成' : '进行中';
+  const roundCls = !st ? '' : st.aborted ? 'bad' : st.finished ? 'good' : '';
+  const roundNums = !st ? '—'
+    : `列表 ${st.lists_ok} 成功 / ${st.lists_failed} 失败 · ` +
+      `新抓 ${st.new} · 跳过 ${st.skipped} · 失败 ${st.failed}`;
+  const errors = (st && st.errors && st.errors.length)
+    ? '<ul class="status-errors">' +
+      st.errors.slice(0, 5).map(e => `<li>${esc(e)}</li>`).join('') + '</ul>'
+    : '';
+  return `<div class="status-section">服务</div><div class="status-card">` +
+    row('版本', s.version ? 'PhotoCuller/' + esc(s.version) : '—') +
+    row('抓图', s.enabled ? '开' : '关') +
+    row('间隔', esc(s.interval_hours) + ' 小时') +
+    row('已抓图片', esc(s.seen_count) + ' 张') +
+    `</div><div class="status-section">最近一轮</div><div class="status-card">` +
+    row('上次开始', fmtTime(s.last_run) + ago(s.last_run)) +
+    row('上次成功', s.last_ok ? fmtTime(s.last_ok) + ago(s.last_ok) : '还没成功跑完过') +
+    row('下次运行', fmtTime(s.next_run)) +
+    row('本轮状态', roundState, roundCls) +
+    row('本轮统计', roundNums) +
+    row('最近错误', s.last_error ? esc(s.last_error) : '无', s.last_error ? 'bad' : '') +
+    `</div>` + errors;
+}
+async function loadStatus() {
+  statusBody.innerHTML = '<div class="status-loading">加载中…</div>';
+  try {
+    statusBody.innerHTML = renderStatusHTML(await api('/api/yandere/status'));
+  } catch (e) {
+    statusBody.innerHTML = '<div class="status-error">打不开状态：' +
+      esc(e.message) + '。检查容器在不在跑。</div>';
+  }
+}
+function stopStatusPoll() {
+  if (statusPollTimer) { clearInterval(statusPollTimer); statusPollTimer = null; }
+}
+async function runYandereNow() {
+  if (statusRunBtn.disabled) return;
+  let prevOk = null;
+  try { prevOk = (await api('/api/yandere/status')).last_ok; } catch { /* 不挡 */ }
+  statusRunBtn.disabled = true;
+  statusRunBtn.textContent = '抓图中…';
+  try {
+    const r = await post('/api/yandere/run', {});
+    if (!r.ok) { toast(r.error || '抓图没开始'); return; }
+    toast('已开始抓图');
+    // 抓图在后台跑（1–2 分钟），每 5 秒看一次状态，跑完就停，最多 3 分钟
+    let ticks = 0;
+    stopStatusPoll();
+    statusPollTimer = setInterval(async () => {
+      ticks++;
+      if (view !== 'status' || ticks > 36) { stopStatusPoll(); return; }
+      try {
+        const s = await api('/api/yandere/status');
+        statusBody.innerHTML = renderStatusHTML(s);
+        if (s.last_ok && s.last_ok !== prevOk) stopStatusPoll();
+      } catch { /* 下一轮再试 */ }
+    }, 5000);
+  } catch (e) {
+    toast('抓图没开始：' + e.message);
+  } finally {
+    statusRunBtn.disabled = false;
+    statusRunBtn.textContent = '立即抓图';
+  }
+}
+function showStatus() {
+  if (view === 'status') return;
+  view = 'status';
+  statusPage.hidden = false;
+  foldersEl.hidden = true;
+  grid.hidden = true;
+  emptyEl.hidden = true;
+  crumbsEl.hidden = true;
+  filtersEl.hidden = true;
+  countEl.hidden = true;
+  document.getElementById('list-warning').hidden = true;
+  document.querySelectorAll('.root-switch button[data-root]').forEach(b => {
+    b.classList.remove('active');
+  });
+  statusBtn.classList.add('active');
+  window.scrollTo(0, 0);
+  loadStatus();
+}
+function showList() {
+  if (view === 'list') return;
+  view = 'list';
+  stopStatusPoll();
+  statusPage.hidden = true;
+  statusBtn.classList.remove('active');
+  syncRootSwitchUI();
+  loadList();  // 从缓存恢复列表，不用重新拉
+}
+statusBtn.addEventListener('click', showStatus);
+document.getElementById('status-refresh').addEventListener('click', loadStatus);
+statusRunBtn.addEventListener('click', runYandereNow);
+// 状态页开着时每 30 秒刷新一次；切走了就不刷
+setInterval(() => { if (view === 'status') loadStatus(); }, 30000);
 
 // ---------- 列表页手势 ----------
 // 右滑回上级目录（带跟手反馈：内容跟着手指右移，左边缘显现“‹ 上级目录”）；
@@ -480,6 +615,7 @@ function slideOutToParent(pull) {
 }
 
 document.addEventListener('touchstart', e => {
+  if (view === 'status') return;  // 状态页不用列表手势（下拉刷新/右滑回上级）
   if (ptrRefreshing) return;
   if (viewerOpen) return;  // 看图器开着时不管
   if (e.touches.length > 1) { cancelPageDragInstant(); pageTouch = null; return; }
@@ -829,3 +965,6 @@ loadList().catch(err => {
   emptyEl.hidden = false;
   emptyEl.textContent = '打不开照片目录：' + err.message + '（检查容器里的目录挂载）';
 });
+
+// ?view=status 直接进状态页（比如从别处贴个链接就能看）
+if (new URLSearchParams(location.search).get('view') === 'status') showStatus();

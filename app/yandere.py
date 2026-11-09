@@ -36,7 +36,7 @@ try:
 except Exception:  # 容器里没装 tzdata 时退回固定 UTC+9，和东京时间一样
     _TOKYO = timezone(timedelta(hours=9))
 
-USER_AGENT = "photo-culler/1.17"
+USER_AGENT = "photo-culler/1.18"
 BASE_URL = "https://yande.re"
 MIN_IMAGE_BYTES = 10 * 1024  # 小于 10KB 的“图”基本是错误页，拒收
 SEEN_KEEP_DAYS = 45  # 已抓记录只留 45 天，定期清理
@@ -264,10 +264,11 @@ def run_round(photos_dir, state_path, *, base_url=BASE_URL,
     return stats
 
 
-def status(state_path, *, enabled=True, interval_hours=6):
+def status(state_path, *, enabled=True, interval_hours=6, version=None):
     """给 /api/yandere/status 用的快照。"""
     st = load_yandere_state(state_path)
-    return {"enabled": enabled, "interval_hours": interval_hours,
+    return {"version": version, "enabled": enabled,
+            "interval_hours": interval_hours,
             "seen_count": len(st.get("seen", {})),
             "last_run": st.get("last_run"), "last_ok": st.get("last_ok"),
             "next_run": st.get("next_run"),
