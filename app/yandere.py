@@ -38,7 +38,7 @@ try:
 except Exception:  # 容器里没装 tzdata 时退回固定 UTC+9，和东京时间一样
     _TOKYO = timezone(timedelta(hours=9))
 
-USER_AGENT = "photo-culler/1.21"
+USER_AGENT = "photo-culler/1.22"
 BASE_URL = "https://yande.re"
 MIN_IMAGE_BYTES = 10 * 1024  # 小于 10KB 的“图”基本是错误页，拒收
 SEEN_KEEP_DAYS = 45  # 已抓记录只留 45 天，定期清理

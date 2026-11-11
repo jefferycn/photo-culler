@@ -325,13 +325,13 @@ function updateTileSaved(p) {
 }
 
 // 保存一张：存到目标目录下按年的子目录（今年是 2026 就存到 2026/）
-// 圆点和 ✓ 立刻出现（乐观反馈），服务器回来了再报具体存到哪；失败则撤回
-// 收藏夹视图里不保存：已经是存过的了，上滑只弹一下 ✓、报“已在收藏夹”，
+// 圆点先不亮，等光点飞到了再亮（乐观反馈）；服务器回来了再报具体存到哪；失败则撤回
+// 收藏夹视图里不保存：已经是存过的了，上滑只播一遍圆环飞走、报“已在收藏夹”，
 // 不调保存接口、不产生 -1 重复文件
 async function savePhoto(p) {
   if (!p) return;
   if (root === 'saved') {
-    popSaveConfirm();
+    confirmSaveRing(false);
     toast('已在收藏夹');
     return;
   }
@@ -340,9 +340,10 @@ async function savePhoto(p) {
     return;
   }
   p.saved = true;
+  saveDotPending = true;  // 圆点等光点落点再亮
   syncViewerOverlay();
   updateTileSaved(p);
-  popSaveConfirm();
+  confirmSaveRing(true);
   try {
     const r = await post('/api/save', { path: p.path });
     p.savedDest = r.dest;
@@ -350,6 +351,7 @@ async function savePhoto(p) {
   } catch (err) {
     p.saved = false;
     p.savedDest = undefined;
+    saveDotPending = false;
     syncViewerOverlay();
     updateTileSaved(p);
     toast('保存失败，请重试');
@@ -708,10 +710,11 @@ const lightbox = new PhotoSwipeLightbox({
   showHideAnimationType: 'fade',
   zoom: true,
   loop: false,  // 看到最后一张就停，不循环回开头
+  spacing: 0.06,  // 左右滑时下一张跟得更紧（演示里的 22px 间距；默认 0.1）
   closeOnVerticalDrag: false,  // 上下滑的手势自己接管：上滑保存、下滑关闭
 });
 
-let progressEl = null, progressFill = null, progressDot = null, savePopEl = null;
+let progressEl = null, progressFill = null, progressDot = null, saveRingEl = null, saveRingFill = null;
 let viewerOpen = false;  // 看图器是否开着：自己记，不依赖 lightbox.pswp.isOpen
 let viewerPhotos = [];   // 看图器打开那一刻的照片快照：看的过程中标记已看会改
                          // visiblePhotos() 的结果（筛“未看过”时列表会缩水），
@@ -734,11 +737,19 @@ function buildViewerOverlay() {
   progressFill = progressEl.querySelector('.vp-fill');
   progressDot = progressEl.querySelector('.vp-dot');
 
-  savePopEl = document.createElement('div');
-  savePopEl.className = 'save-pop';
-  savePopEl.hidden = true;
-  savePopEl.innerHTML = '<span>✓</span>';
-  lightbox.pswp.element.appendChild(savePopEl);
+  // 上滑保存的圆环：SVG 描边当进度条，r=44，周长约 276.5，顺时针从顶部填满
+  saveRingEl = document.createElement('div');
+  saveRingEl.className = 'save-ring';
+  saveRingEl.hidden = true;
+  saveRingEl.innerHTML =
+    '<svg viewBox="0 0 100 100">' +
+    '<circle class="sr-track" cx="50" cy="50" r="44"/>' +
+    '<circle class="sr-fill" cx="50" cy="50" r="44"/>' +
+    '</svg>';
+  lightbox.pswp.element.appendChild(saveRingEl);
+  saveRingFill = saveRingEl.querySelector('.sr-fill');
+  saveRingFill.style.strokeDasharray = String(RING_C);
+  saveRingFill.style.strokeDashoffset = String(RING_C);
 }
 
 function syncViewerOverlay() {
@@ -750,35 +761,130 @@ function syncViewerOverlay() {
   progressFill.style.width = total ? `${((idx + 1) / total) * 100}%` : '0%';
   const p = vis[idx];
   // 收藏夹里不显示圆点：全是已保存的，再画就是噪音
-  progressDot.hidden = root === 'saved' || !(p && p.saved);
+  // 刚存下那一下圆点先别亮：等光点飞到了再亮（saveDotPending）
+  progressDot.hidden = root === 'saved' || saveDotPending || !(p && p.saved);
 }
 
-// 上滑保存的 ✓：拖动时随拉动距离慢慢显现，松手存下后弹一下再消失
-let savePopHideTimer = null;
-function showSavePopPreview(progress) {
-  if (!savePopEl) return;
-  clearTimeout(savePopHideTimer);  // 别让上一次 hide 的延时把刚显现的 ✓ 又藏掉
+// 上滑保存的圆环进度：拖动时圆环顺时针填满、微微长大、描边变粗；
+// 松手存下后圆环收拢成光点飞向底部黄点，黄点吸入弹一下——
+// 这就是“存好了”的确认，代替原来的 ✓ 弹一下。
+// 注意：圆环收拢动画结束后必须取消并藏起来，别留 fill:'forwards' 盖着样式，
+// 否则第二次拖动时圆环既不变大也不消失（演示里冻环 bug 的根因）。
+const RING_C = 2 * Math.PI * 44;  // r=44 的圆周长
+let saveDotPending = false;  // 刚存下、光点还在飞：圆点等落点再亮
+let saveRingHideTimer = null;
+let saveFlyerEl = null;  // 飞向黄点的光点
+let saveHaloEl = null;   // 落点那一圈涟漪
+function showSaveRingPreview(progress) {
+  if (!saveRingEl) return;
+  clearTimeout(saveRingHideTimer);  // 别让上一次 hide 的延时把刚显现的圆环又藏掉
   const p = Math.max(0, Math.min(1, progress));
-  savePopEl.hidden = false;
-  savePopEl.classList.remove('popped');
-  savePopEl.style.animation = 'none';
-  savePopEl.style.opacity = String(p);
-  savePopEl.style.transform = `translate(-50%,-50%) scale(${0.6 + 0.4 * p})`;
+  saveRingEl.hidden = false;
+  saveRingEl.style.opacity = String(p);
+  saveRingEl.style.transform = `translate(-50%,-50%) scale(${0.62 + 0.43 * p})`;
+  saveRingFill.style.strokeDashoffset = String(RING_C * (1 - p));
+  saveRingFill.style.strokeWidth = String(5 + 2.5 * p);
 }
-function hideSavePopPreview() {
-  if (!savePopEl) return;
-  clearTimeout(savePopHideTimer);
-  savePopEl.style.opacity = '0';
-  savePopHideTimer = setTimeout(() => { if (savePopEl) savePopEl.hidden = true; }, 180);
+function hideSaveRingPreview() {
+  if (!saveRingEl) return;
+  clearTimeout(saveRingHideTimer);
+  saveRingEl.style.opacity = '0';
+  saveRingHideTimer = setTimeout(() => { if (saveRingEl) saveRingEl.hidden = true; }, 180);
 }
-function popSaveConfirm() {
-  if (!savePopEl) return;
-  savePopEl.hidden = false;
-  savePopEl.style.animation = '';
-  savePopEl.classList.remove('popped');
-  void savePopEl.offsetWidth;  // 重启动画
-  savePopEl.classList.add('popped');
-  setTimeout(() => { if (savePopEl) savePopEl.hidden = true; }, 750);
+function resetSaveRing() {
+  // 动画中途换页/关掉：正在飞的光点和圆环立刻清掉，别留在下一张上
+  if (saveFlyerEl) { saveFlyerEl.remove(); saveFlyerEl = null; }
+  if (saveHaloEl) { saveHaloEl.remove(); saveHaloEl = null; }
+  if (saveRingEl) {
+    saveRingEl.getAnimations().forEach(a => a.cancel());
+    saveRingEl.hidden = true;
+    saveRingEl.style.opacity = '0';
+  }
+  clearTimeout(saveRingHideTimer);
+}
+function dotSlotCenter() {
+  // 黄点本该在的位置：进度条右端 + 间距 + 半个点（收藏夹里没有点，也飞到这里）
+  const pswp = lightbox.pswp;
+  const hostRect = pswp.element.getBoundingClientRect();
+  const track = progressEl.querySelector('.vp-track').getBoundingClientRect();
+  return { x: track.right + 10 + 4 - hostRect.left,
+           y: track.top + track.height / 2 - hostRect.top };
+}
+function confirmSaveRing(flyToDot) {
+  if (!saveRingEl || !lightbox.pswp) return;
+  const savedP = currentPhoto();
+  const host = lightbox.pswp.element;
+  const hostRect = host.getBoundingClientRect();
+  showSaveRingPreview(1);  // 先确认填满（回车触发时圆环还没出来）
+  const ringRect = saveRingEl.getBoundingClientRect();
+  const from = { x: ringRect.left + ringRect.width / 2 - hostRect.left,
+                 y: ringRect.top + ringRect.height / 2 - hostRect.top };
+  let to;
+  if (flyToDot) {
+    // 先把圆点放出来但透明着，这样才能量到落点位置
+    progressDot.hidden = false;
+    progressDot.style.opacity = '0';
+    const r = progressDot.getBoundingClientRect();
+    to = { x: r.left + r.width / 2 - hostRect.left,
+           y: r.top + r.height / 2 - hostRect.top };
+  } else {
+    to = dotSlotCenter();
+  }
+  // 圆环先轻顿一下（确认填满），再收拢消失
+  saveRingEl.animate(
+    [{ transform: 'translate(-50%,-50%) scale(1.05)', opacity: 1, offset: 0 },
+     { transform: 'translate(-50%,-50%) scale(1.05)', opacity: 1, offset: 0.35 },
+     { transform: 'translate(-50%,-50%) scale(0.2)', opacity: 0, offset: 1 }],
+    { duration: 220, easing: 'ease-in', fill: 'forwards' });
+  setTimeout(() => {
+    // 动画结束了就取消并藏起来，别留 fill:'forwards' 盖着样式
+    if (saveRingEl) {
+      saveRingEl.getAnimations().forEach(a => a.cancel());
+      saveRingEl.hidden = true;
+    }
+  }, 240);
+  // 光点从圆环中心飞向落点：越接近越快，像被吸过去
+  const flyer = document.createElement('div');
+  flyer.className = 'save-flyer';
+  flyer.style.left = `${from.x}px`;
+  flyer.style.top = `${from.y}px`;
+  host.appendChild(flyer);
+  saveFlyerEl = flyer;
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  const fly = flyer.animate(
+    [{ transform: 'translate(-50%,-50%) scale(1)', opacity: 1, offset: 0 },
+     { transform: `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px)) scale(1)`, opacity: 1, offset: 0.8 },
+     { transform: `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px)) scale(0.9)`, opacity: flyToDot ? 1 : 0, offset: 1 }],
+    { duration: 380, delay: 140, easing: 'cubic-bezier(.5,.05,.85,.4)', fill: 'forwards' });
+  fly.onfinish = () => {
+    flyer.remove();
+    if (saveFlyerEl === flyer) saveFlyerEl = null;
+    if (!lightbox.pswp || !viewerOpen) return;
+    if (currentPhoto() !== savedP) { saveDotPending = false; return; }  // 飞行中途滑走了：不等了
+    if (!flyToDot) return;  // 收藏夹：没有圆点要亮，光点到位置淡掉就好
+    saveDotPending = false;
+    progressDot.style.opacity = '';
+    syncViewerOverlay();
+    progressDot.classList.remove('pop');
+    void progressDot.offsetWidth;  // 重启动画
+    progressDot.classList.add('pop');
+    setTimeout(() => { if (progressDot) progressDot.classList.remove('pop'); }, 300);
+    // 落点涟漪：黄点先亮一圈光晕迎接
+    const halo = document.createElement('div');
+    halo.className = 'save-halo';
+    halo.style.left = `${to.x}px`;
+    halo.style.top = `${to.y}px`;
+    host.appendChild(halo);
+    saveHaloEl = halo;
+    halo.animate(
+      [{ transform: 'translate(-50%,-50%) scale(1)', opacity: 0.8 },
+       { transform: 'translate(-50%,-50%) scale(5)', opacity: 0 }],
+      { duration: 350, easing: 'ease-out' }).onfinish = () => {
+      halo.remove();
+      if (saveHaloEl === halo) saveHaloEl = null;
+    };
+  };
 }
 
 function viewerZoomed() {
@@ -788,8 +894,8 @@ function viewerZoomed() {
 
 // 看图器竖直拖动：跟手反馈
 // 下滑关闭：图片跟手指下移（0.6 阻尼），松手即关。
-// 上滑保存：图片不动，只有中央 ✓ 随拉动距离显现——之前图片跟着上移再弹回，
-// 感觉很怪；保存的反馈就是 ✓ 本身，不需要动图片。
+// 上滑保存：图片不动，只有中央圆环随拉动距离填满——之前图片跟着上移再弹回，
+// 感觉很怪；保存的反馈就是圆环本身，不需要动图片。
 // 双指放大（捏合）不参与手势：第二根手指落下就取消竖直拖动，
 // 一根手指抬起也不算手势结束——之前捏合时抬起一根手指，dy 会误触发保存。
 // 背景透明度绝对不能碰：.pswp__bg 的 CSS 默认 opacity 是 0.005，全靠
@@ -797,29 +903,42 @@ function viewerZoomed() {
 // pswp.bg.style.opacity 再清掉（=''），内联样式一丢背景就变透明，
 // 之后每次左右滑列表页都会从背后透出来——v1.4/v1.5/v1.6 的破屏就是这么来的。
 // 所以下滑时也只动图片，背景交给 PhotoSwipe 自己管。
-let vTouch = null;  // { x, y, axis }
+let vTouch = null;  // { x, y, axis, samples: [{t, y}] }（samples 用来算松手速度）
 let viewerPinching = false;
 let viewerResetTimer = null;
+let viewerCloseTimer = null;
 
 function resetViewerDrag() {
+  // 没过线弹回原位：带一点回弹的弹簧曲线，别生硬
   const pswp = lightbox.pswp;
   if (!pswp) return;
   clearTimeout(viewerResetTimer);
   const wrap = pswp.scrollWrap;
   if (wrap) {
-    wrap.style.transition = 'transform .25s ease';
+    wrap.style.transition = 'transform .35s cubic-bezier(.2,.9,.3,1.15), opacity .3s ease';
     wrap.style.transform = '';
-    viewerResetTimer = setTimeout(() => { if (wrap) wrap.style.transition = ''; }, 280);
+    wrap.style.opacity = '';
+    viewerResetTimer = setTimeout(() => { if (wrap) wrap.style.transition = ''; }, 380);
   }
-  hideSavePopPreview();
+  if (progressEl) { progressEl.style.transition = 'opacity .3s ease'; progressEl.style.opacity = ''; }
+  hideSaveRingPreview();
 }
 function resetViewerDragInstant() {
   const pswp = lightbox.pswp;
   if (!pswp) return;
   clearTimeout(viewerResetTimer);
   const wrap = pswp.scrollWrap;
-  if (wrap) { wrap.style.transition = 'none'; wrap.style.transform = ''; }
-  hideSavePopPreview();
+  if (wrap) { wrap.style.transition = 'none'; wrap.style.transform = ''; wrap.style.opacity = ''; }
+  if (progressEl) { progressEl.style.transition = 'none'; progressEl.style.opacity = ''; }
+  hideSaveRingPreview();
+}
+function touchVelocityY() {
+  // 松手前 100ms 内的平均速度（px/ms），用来判定“甩一下也关”
+  if (!vTouch || vTouch.samples.length < 2) return 0;
+  const s = vTouch.samples;
+  const dt = s[s.length - 1].t - s[0].t;
+  if (dt <= 0) return 0;
+  return (s[s.length - 1].y - s[0].y) / dt;
 }
 
 function onViewerTouchStart(e) {
@@ -831,7 +950,7 @@ function onViewerTouchStart(e) {
   }
   clearTimeout(viewerResetTimer);
   const t = e.changedTouches[0];
-  vTouch = { x: t.clientX, y: t.clientY, axis: null };
+  vTouch = { x: t.clientX, y: t.clientY, axis: null, samples: [{ t: e.timeStamp, y: t.clientY }] };
 }
 function onViewerTouchMove(e) {
   const pswp = lightbox.pswp;
@@ -846,6 +965,8 @@ function onViewerTouchMove(e) {
   const t = e.changedTouches[0];
   const dx = t.clientX - vTouch.x;
   const dy = t.clientY - vTouch.y;
+  vTouch.samples.push({ t: e.timeStamp, y: t.clientY });
+  while (vTouch.samples.length > 1 && e.timeStamp - vTouch.samples[0].t > 100) vTouch.samples.shift();
   if (!vTouch.axis) {
     // 方向判定要够严：斜着滑时先别定方向，等一方明显占优再定
     if (Math.abs(dy) > 16 && Math.abs(dy) > Math.abs(dx) * 1.5) vTouch.axis = 'y';
@@ -860,17 +981,23 @@ function onViewerTouchMove(e) {
   }
   if (vTouch.axis !== 'y') return;
   if (dy > 0) {
-    // 下滑关闭：图片跟手下移（背景不动，见上面注释）
+    // 下滑关闭：图片跟手下移（背景不动，见上面注释），同时微微缩小、淡出；
+    // 拉过 160px 后阻尼加大，越拉越费劲
     const wrap = pswp.scrollWrap;
+    const eff = dy <= 160 ? dy * 0.6 : 160 * 0.6 + (dy - 160) * 0.3;
+    const k = Math.min(1, dy / 160);
     wrap.style.transition = 'none';
-    wrap.style.transform = `translateY(${dy * 0.6}px)`;
-    hideSavePopPreview();
+    wrap.style.transform = `translateY(${eff}px) scale(${1 - 0.15 * k})`;
+    wrap.style.opacity = String(1 - 0.16 * k);
+    if (progressEl) progressEl.style.opacity = String(1 - 0.16 * k);
+    hideSaveRingPreview();
   } else {
-    // 上滑保存：图片不动，只有 ✓ 随拉动显现
+    // 上滑保存：图片不动，只有中央圆环随拉动填满
     const wrap = pswp.scrollWrap;
     wrap.style.transition = 'none';
     wrap.style.transform = '';
-    showSavePopPreview((-dy - 30) / 60);
+    wrap.style.opacity = '';
+    showSaveRingPreview((-dy - 30) / 60);
   }
 }
 function onViewerTouchEnd(e) {
@@ -887,13 +1014,26 @@ function onViewerTouchEnd(e) {
   const dx = t.clientX - vTouch.x;
   const dy = t.clientY - vTouch.y;
   const axis = vTouch.axis;
+  const vy = touchVelocityY();  // 先算速度：下面就把 vTouch 清掉了
   vTouch = null;
   if (!pswp) return;
   const zoomed = viewerZoomed();
-  if (!zoomed && axis === 'y' && dy > 90) {
-    // 下滑关闭：不弹回，直接关——图片保持跟手的位置，关得连贯
-    hideSavePopPreview();
-    pswp.close();
+  if (!zoomed && axis === 'y' && dy > 0 && (dy > 90 || (vy > 0.65 && dy > 28))) {
+    // 下滑关闭：按松手速度继续下滑、缩小、淡出再关，不直接切
+    hideSaveRingPreview();
+    const wrap = pswp.scrollWrap;
+    const eff = dy <= 160 ? dy * 0.6 : 160 * 0.6 + (dy - 160) * 0.3;
+    const extra = Math.min(vy * 180, 260);
+    const dur = vy > 1 ? 0.18 : 0.28;
+    wrap.style.transition = `transform ${dur}s cubic-bezier(.5,0,.8,.4), opacity ${dur}s ease`;
+    wrap.style.transform = `translateY(${eff + extra}px) scale(0.8)`;
+    wrap.style.opacity = '0';
+    if (progressEl) {
+      progressEl.style.transition = `opacity ${dur}s ease`;
+      progressEl.style.opacity = '0';
+    }
+    clearTimeout(viewerCloseTimer);
+    viewerCloseTimer = setTimeout(() => { if (viewerOpen && lightbox.pswp) lightbox.pswp.close(); }, dur * 1000);
     return;
   }
   // 其他情况：弹回原位
@@ -913,6 +1053,10 @@ lightbox.on('afterInit', () => {
   el.addEventListener('touchend', onViewerTouchEnd, { passive: true });
 });
 lightbox.on('change', () => {
+  if (saveDotPending) {  // 存完立刻滑走：光点不等了，圆点下次回到这张时再亮
+    saveDotPending = false;
+    resetSaveRing();
+  }
   syncViewerOverlay();
   // 滑快了可能一次越过好几张：把上次落脚到这次落脚之间路过的全记上
   if (lightbox.pswp) {
@@ -929,10 +1073,14 @@ lightbox.on('close', () => {
   vTouch = null;
   viewerPinching = false;
   clearTimeout(viewerResetTimer);
+  clearTimeout(viewerCloseTimer);
+  saveDotPending = false;
+  resetSaveRing();
   if (progressEl) progressEl.remove();
-  if (savePopEl) savePopEl.remove();
+  if (saveRingEl) saveRingEl.remove();
   progressEl = null;
-  savePopEl = null;
+  saveRingEl = null;
+  saveRingFill = null;
 });
 lightbox.init();
 
