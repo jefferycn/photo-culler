@@ -13,6 +13,7 @@ services:
       # 要看的照片目录。v1.17 起不再只读：yandere 抓图器要往里面写新图
       # （只建日期目录、只写不存在的新文件，永不删除、永不覆盖已有文件）。
       # .env 里没填就会直接报错停下，不会静悄悄挂一个空目录
+      # 多个照片库：别直接改这里加挂载，见 docker-compose.override.yml.example
       - ${PHOTOS_DIR:?请先复制 .env.example 为 .env 并填写 PHOTOS_DIR}:/photos
       # 喜欢的照片保存到这里
       - ${DEST_DIR:?请先复制 .env.example 为 .env 并填写 DEST_DIR}:/dest

@@ -66,6 +66,22 @@ Safari 的地址栏和工具栏）。页面顶部会提示一次，关掉就不�
 
 端口 8090 被占了就改 `docker-compose.yml` 里的 `"8090:8080"` 前面那个数字。
 
+## 多个照片库
+
+不用改代码，挂目录就行：
+
+1. `cp docker-compose.override.yml.example docker-compose.override.yml`
+2. 把里面那两行注释解开，改成你的真实路径，例如
+   `- /volume1/photo/xxx:/photos/xxx`
+3. `docker compose up -d`（不用 `--build`，只换挂载）
+
+每个库挂成 `/photos` 下的一个子目录，列表里就多一个同名文件夹，点进去
+就是那个库；已看、已保存按路径记，几个库互不干扰。
+yandere 抓图器往 `PHOTOS_DIR` 根目录写日期文件夹，所以 yandere 必须留在
+根目录，别挪到子目录里。
+别直接改 `docker-compose.yml` 加挂载，你的本地修改以后 `git pull` 会冲突；
+override 文件在 `.gitignore` 里，不进仓库。
+
 ## 为什么滑起来快
 
 丝滑靠的不是原生还是网页，而是三件事，这个工具三件都有：

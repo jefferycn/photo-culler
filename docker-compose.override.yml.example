@@ -1,0 +1,17 @@
+# 多个照片库怎么挂：把这个文件复制为同目录下的 docker-compose.override.yml，
+# 改成你的真实路径，`docker compose up -d` 就会自动把它和 docker-compose.yml
+# 合起来用（volumes 是合并，不是覆盖）。
+#
+# 每个库挂成 /photos 下的一个子目录，列表里就多一个同名文件夹，点进去就是那个库。
+# 已看、已保存按路径记，几个库互不干扰。
+#
+# 注意：yandere 抓图器往 PHOTOS_DIR 根目录写日期文件夹，所以 yandere 必须留在
+# 根目录（就是 .env 里 PHOTOS_DIR 那个），别把它也挪到子目录里。
+#
+# 不要直接改 docker-compose.yml 加挂载：你的本地修改以后 git pull 会冲突。
+# override 文件在 .gitignore 里，不会进仓库，随便改。
+services:
+  photo-culler:
+    volumes:
+      # - /volume1/photo/xxx:/photos/xxx
+      # - /volume1/photo/yyy:/photos/yyy
