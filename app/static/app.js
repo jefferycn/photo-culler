@@ -326,12 +326,11 @@ function updateTileSaved(p) {
 
 // 保存一张：存到目标目录下按年的子目录（今年是 2026 就存到 2026/）
 // 圆点先不亮，等光点飞到了再亮（乐观反馈）；服务器回来了再报具体存到哪；失败则撤回
-// 收藏夹视图里不保存：已经是存过的了，上滑只播一遍圆环飞走、报“已在收藏夹”，
+// 收藏夹视图里不保存：已经是存过的了，上滑不播圆环，只报“已在收藏夹”，
 // 不调保存接口、不产生 -1 重复文件
 async function savePhoto(p) {
   if (!p) return;
   if (root === 'saved') {
-    confirmSaveRing(false);
     toast('已在收藏夹');
     return;
   }
@@ -343,7 +342,7 @@ async function savePhoto(p) {
   saveDotPending = true;  // 圆点等光点落点再亮
   syncViewerOverlay();
   updateTileSaved(p);
-  confirmSaveRing(true);
+  confirmSaveRing();
   try {
     const r = await post('/api/save', { path: p.path });
     p.savedDest = r.dest;
@@ -802,15 +801,7 @@ function resetSaveRing() {
   }
   clearTimeout(saveRingHideTimer);
 }
-function dotSlotCenter() {
-  // 黄点本该在的位置：进度条右端 + 间距 + 半个点（收藏夹里没有点，也飞到这里）
-  const pswp = lightbox.pswp;
-  const hostRect = pswp.element.getBoundingClientRect();
-  const track = progressEl.querySelector('.vp-track').getBoundingClientRect();
-  return { x: track.right + 10 + 4 - hostRect.left,
-           y: track.top + track.height / 2 - hostRect.top };
-}
-function confirmSaveRing(flyToDot) {
+function confirmSaveRing() {
   if (!saveRingEl || !lightbox.pswp) return;
   const savedP = currentPhoto();
   const host = lightbox.pswp.element;
@@ -819,17 +810,12 @@ function confirmSaveRing(flyToDot) {
   const ringRect = saveRingEl.getBoundingClientRect();
   const from = { x: ringRect.left + ringRect.width / 2 - hostRect.left,
                  y: ringRect.top + ringRect.height / 2 - hostRect.top };
-  let to;
-  if (flyToDot) {
-    // 先把圆点放出来但透明着，这样才能量到落点位置
-    progressDot.hidden = false;
-    progressDot.style.opacity = '0';
-    const r = progressDot.getBoundingClientRect();
-    to = { x: r.left + r.width / 2 - hostRect.left,
-           y: r.top + r.height / 2 - hostRect.top };
-  } else {
-    to = dotSlotCenter();
-  }
+  // 先把圆点放出来但透明着，这样才能量到落点位置
+  progressDot.hidden = false;
+  progressDot.style.opacity = '0';
+  const r = progressDot.getBoundingClientRect();
+  const to = { x: r.left + r.width / 2 - hostRect.left,
+               y: r.top + r.height / 2 - hostRect.top };
   // 圆环先轻顿一下（确认填满），再收拢消失
   saveRingEl.animate(
     [{ transform: 'translate(-50%,-50%) scale(1.05)', opacity: 1, offset: 0 },
@@ -855,14 +841,13 @@ function confirmSaveRing(flyToDot) {
   const fly = flyer.animate(
     [{ transform: 'translate(-50%,-50%) scale(1)', opacity: 1, offset: 0 },
      { transform: `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px)) scale(1)`, opacity: 1, offset: 0.8 },
-     { transform: `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px)) scale(0.9)`, opacity: flyToDot ? 1 : 0, offset: 1 }],
+     { transform: `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px)) scale(0.9)`, opacity: 1, offset: 1 }],
     { duration: 380, delay: 140, easing: 'cubic-bezier(.5,.05,.85,.4)', fill: 'forwards' });
   fly.onfinish = () => {
     flyer.remove();
     if (saveFlyerEl === flyer) saveFlyerEl = null;
     if (!lightbox.pswp || !viewerOpen) return;
     if (currentPhoto() !== savedP) { saveDotPending = false; return; }  // 飞行中途滑走了：不等了
-    if (!flyToDot) return;  // 收藏夹：没有圆点要亮，光点到位置淡掉就好
     saveDotPending = false;
     progressDot.style.opacity = '';
     syncViewerOverlay();
@@ -993,11 +978,12 @@ function onViewerTouchMove(e) {
     hideSaveRingPreview();
   } else {
     // 上滑保存：图片不动，只有中央圆环随拉动填满
+    // 收藏夹里不保存，圆环也不出现（免得像是要存），松手只报“已在收藏夹”
     const wrap = pswp.scrollWrap;
     wrap.style.transition = 'none';
     wrap.style.transform = '';
     wrap.style.opacity = '';
-    showSaveRingPreview((-dy - 30) / 60);
+    if (root !== 'saved') showSaveRingPreview((-dy - 30) / 60);
   }
 }
 function onViewerTouchEnd(e) {
