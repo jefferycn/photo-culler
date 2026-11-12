@@ -1037,6 +1037,14 @@ lightbox.on('afterInit', () => {
   el.addEventListener('touchstart', onViewerTouchStart, { passive: true });
   el.addEventListener('touchmove', onViewerTouchMove, { passive: true });
   el.addEventListener('touchend', onViewerTouchEnd, { passive: true });
+  // 上滑保存/下滑关闭进行时，PhotoSwipe 别跟着横移：竖直手势是自己接管的，
+  // 但 PhotoSwipe 不知道——closeOnVerticalDrag 关掉后，竖直拖动也会让主滚动
+  // 跟着横向位移（fit 缩放下图片不可平移，任何 x 位移都直接推主滚动），
+  // 所以上滑时手指一斜图片就左右晃。竖直锁轴后直接拦掉它的 pointerMove，
+  // 一旦又转成横向（vTouch.axis 变 'x'）立刻放开，左右滑不受影响。
+  lightbox.pswp.on('pointerMove', (e) => {
+    if (vTouch && vTouch.axis === 'y') e.preventDefault();
+  });
 });
 lightbox.on('change', () => {
   if (saveDotPending) {  // 存完立刻滑走：光点不等了，圆点下次回到这张时再亮
