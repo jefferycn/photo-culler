@@ -1040,10 +1040,21 @@ lightbox.on('afterInit', () => {
   // 上滑保存/下滑关闭进行时，PhotoSwipe 别跟着横移：竖直手势是自己接管的，
   // 但 PhotoSwipe 不知道——closeOnVerticalDrag 关掉后，竖直拖动也会让主滚动
   // 跟着横向位移（fit 缩放下图片不可平移，任何 x 位移都直接推主滚动），
-  // 所以上滑时手指一斜图片就左右晃。竖直锁轴后直接拦掉它的 pointerMove，
-  // 一旦又转成横向（vTouch.axis 变 'x'）立刻放开，左右滑不受影响。
+  // 所以上滑时手指一斜图片就左右晃。
+  // 锁的时机不能等自己的锁轴（16px + 1.5 倍）：那样 PhotoSwipe 在锁轴前已经
+  // 把图片推偏了十几 px，而且 pointermove 比 touchmove 先到，每 tick 还要再
+  // 慢一拍——v1.24 就是这么漏过去的。直接用这次移动自己的坐标判断：
+  // 竖直占优就拦，零延迟；8px 是为了抢在 PhotoSwipe 自己的 10px 轴判定之前。
+  // 一旦转成横向立刻放开，左右滑不受影响；放大平移、捏合也不锁。
   lightbox.pswp.on('pointerMove', (e) => {
-    if (vTouch && vTouch.axis === 'y') e.preventDefault();
+    if (!vTouch || viewerPinching || viewerZoomed()) return;
+    const ev = e.originalEvent;
+    if (!ev) return;
+    const t = ev.touches ? ev.touches[0] : ev;
+    if (!t || t.clientX === undefined) return;
+    const dx = t.clientX - vTouch.x;
+    const dy = t.clientY - vTouch.y;
+    if (Math.abs(dy) >= 8 && Math.abs(dy) > Math.abs(dx) * 1.5) e.preventDefault();
   });
 });
 lightbox.on('change', () => {
