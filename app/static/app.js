@@ -77,6 +77,9 @@ function refreshCounts() {
 
 function renderCrumbs() {
   const parts = folder ? folder.split('/') : [];
+  // 根目录不显示面包屑：顶栏标题已经是“照片库/收藏夹”了，再显示一排
+  // 就是重复；进了文件夹才显示（照片库 › 2026-11-04），根那颗还能点回根目录
+  crumbsEl.hidden = parts.length === 0;
   crumbsEl.innerHTML = '';
   const mk = (label, target, current) => {
     const b = document.createElement('button');

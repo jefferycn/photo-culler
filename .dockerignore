@@ -1,0 +1,12 @@
+# 构建上下文只留 app/：data/ 是缩略图缓存（几百 MB），不排除的话
+# 每次 docker build 都要先把整个缓存发给 Docker 守护进程，build 就很慢
+.git
+data/
+.env
+docker-compose.override.yml
+docker-compose.yml
+__pycache__/
+*.zip
+tests/
+*.md
+LICENSE
