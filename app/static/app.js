@@ -367,13 +367,48 @@ document.querySelectorAll('.filters button[data-filter]').forEach(btn => {
   });
 });
 
-// ---------- 视图切换：照片库 | 收藏夹 ----------
-// 两个视图各记各的目录、筛选和滚动位置，切换不丢位置；
-// 上次选的视图记在 localStorage，下次打开恢复。
-function syncRootSwitchUI() {
-  document.querySelectorAll('.root-switch button[data-root]').forEach(b => {
-    b.classList.toggle('active', b.dataset.root === root);
+// ---------- 视图切换：照片库 | 收藏夹 | 状态 ----------
+// 三个视图都在左侧抽屉里（ReceiptBin 同款：汉堡按钮开抽屉，毛玻璃，当前页
+// 金色高亮；点遮罩、左滑抽屉、Esc、再点汉堡都能关；右滑打开不做，左边缘
+// 手势已给右滑回上级）。两个照片视图各记各的目录、筛选和滚动位置，切换
+// 不丢位置；上次选的视图记在 localStorage，下次打开恢复。
+let view = 'list';  // 'list' | 'status'
+const topbarTitle = document.getElementById('topbar-title');
+const burgerBtn = document.getElementById('burgerBtn');
+const drawerEl = document.getElementById('drawer');
+const scrimEl = document.getElementById('scrim');
+function openDrawer() {
+  drawerEl.classList.add('open');
+  scrimEl.classList.add('show');
+  burgerBtn.classList.add('open');
+  document.body.classList.add('drawer-open');
+}
+function closeDrawer() {
+  drawerEl.classList.remove('open');
+  scrimEl.classList.remove('show');
+  burgerBtn.classList.remove('open');
+  document.body.classList.remove('drawer-open');
+}
+burgerBtn.addEventListener('click', () => {
+  drawerEl.classList.contains('open') ? closeDrawer() : openDrawer();
+});
+scrimEl.addEventListener('click', closeDrawer);
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeDrawer(); });
+// 左滑抽屉关闭
+let drawerTouchX = null;
+drawerEl.addEventListener('touchstart', e => { drawerTouchX = e.touches[0].clientX; }, { passive: true });
+drawerEl.addEventListener('touchend', e => {
+  if (drawerTouchX === null) return;
+  if (drawerTouchX - e.changedTouches[0].clientX > 60) closeDrawer();
+  drawerTouchX = null;
+}, { passive: true });
+
+function syncDrawerUI() {
+  const current = view === 'status' ? 'status' : root;
+  document.querySelectorAll('.drawer-item[data-nav]').forEach(b => {
+    b.classList.toggle('current', b.dataset.nav === current);
   });
+  topbarTitle.textContent = current === 'photos' ? '照片库' : current === 'saved' ? '收藏夹' : '状态';
   // 收藏夹里“已保存”这颗没意义：切过去时如果正筛着它，回到全部
   if (root === 'saved' && filter === 'saved') {
     filter = 'all';
@@ -396,7 +431,7 @@ function switchRoot(newRoot) {
   document.querySelectorAll('.filters button[data-filter]').forEach(b => {
     b.classList.toggle('active', b.dataset.filter === filter);
   });
-  syncRootSwitchUI();
+  syncDrawerUI();
   if (scrollMemory[scrollKey(folder)] !== undefined) {
     pendingRestoreY = scrollMemory[scrollKey(folder)];
     suppressResumeOnce = true;
@@ -405,22 +440,23 @@ function switchRoot(newRoot) {
   loadList();
 }
 
-document.querySelectorAll('.root-switch button[data-root]').forEach(btn => {
-  btn.addEventListener('click', () => {
+document.querySelectorAll('.drawer-item[data-nav]').forEach(item => {
+  item.addEventListener('click', () => {
+    closeDrawer();
+    const nav = item.dataset.nav;
+    if (nav === 'status') { showStatus(); return; }
     if (view === 'status') showList();
-    switchRoot(btn.dataset.root);
+    switchRoot(nav);
   });
 });
-syncRootSwitchUI();
+syncDrawerUI();
 
-// ---------- 状态页（v1.18）：顶栏“状态”进去看服务器状态 ----------
+// ---------- 状态页（v1.18）：抽屉菜单「状态」进去看服务器状态 ----------
 // 状态页不是第三个照片视图，只是个查看页：不记 localStorage，不参与
 // 目录/筛选/滚动记忆；点回照片库/收藏夹就回到原来的列表。
-let view = 'list';  // 'list' | 'status'
 const statusPage = document.getElementById('status-page');
 const statusBody = document.getElementById('status-body');
 const statusRunBtn = document.getElementById('status-run');
-const statusBtn = document.querySelector('.root-switch button[data-view="status"]');
 let statusPollTimer = null;
 
 const esc = s => String(s).replace(/[&<>"']/g, c =>
@@ -523,10 +559,7 @@ function showStatus() {
   filtersEl.hidden = true;
   countEl.hidden = true;
   document.getElementById('list-warning').hidden = true;
-  document.querySelectorAll('.root-switch button[data-root]').forEach(b => {
-    b.classList.remove('active');
-  });
-  statusBtn.classList.add('active');
+  syncDrawerUI();
   window.scrollTo(0, 0);
   loadStatus();
 }
@@ -535,8 +568,7 @@ function showList() {
   view = 'list';
   stopStatusPoll();
   statusPage.hidden = true;
-  statusBtn.classList.remove('active');
-  syncRootSwitchUI();
+  syncDrawerUI();
   // showStatus 藏起来的列表元素要在这里放回来：renderCrumbs/renderFolders/
   // renderGrid 只填内容、不管 hidden，不放回来列表就一直空白（v1.18 的 bug）
   foldersEl.hidden = false;
@@ -547,7 +579,6 @@ function showList() {
   emptyEl.hidden = false;
   loadList();  // 从缓存恢复列表，不用重新拉
 }
-statusBtn.addEventListener('click', showStatus);
 document.getElementById('status-refresh').addEventListener('click', loadStatus);
 statusRunBtn.addEventListener('click', runYandereNow);
 // 状态页开着时每 30 秒刷新一次；切走了就不刷

@@ -36,12 +36,42 @@ body { padding-bottom: calc(16px + env(safe-area-inset-bottom)); }
   transition: opacity .15s ease; pointer-events: none; }
 
 /* ---------- 顶部栏 ---------- */
-/* 视图切换：照片库 | 收藏夹，和筛选胶囊一个样式，当前选中的是金色 */
-.root-switch { display: flex; gap: 6px; margin-bottom: 8px; }
-.root-switch button { background: #1e1e20; color: #ccc; border: 1px solid #333336;
-  border-radius: 999px; padding: 7px 16px; font-size: 14px; font-weight: 600; }
-.root-switch button.active { background: #f5c518; color: #111; border-color: #f5c518;
-  font-weight: 700; }
+/* 顶栏左上角是汉堡按钮（ReceiptBin 同款抽屉菜单），右边是当前视图名；
+   三个视图（照片库 / 收藏夹 / 状态）都在抽屉里，不再是顶栏分段切换 */
+.topbar-row { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.topbar-title { font-size: 17px; font-weight: 700; }
+.burger { display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 5px; width: 34px; height: 34px; border: none; border-radius: 50%;
+  background: #1e1e20; cursor: pointer; padding: 0; touch-action: manipulation; flex: none; }
+.burger:active { opacity: .6; }
+.burger span { display: block; width: 18px; height: 2px; border-radius: 2px; background: #eee;
+  transition: transform .25s ease, opacity .2s ease; }
+.burger.open span:nth-child(1) { transform: translateY(7px) rotate(45deg); }
+.burger.open span:nth-child(2) { opacity: 0; }
+.burger.open span:nth-child(3) { transform: translateY(-7px) rotate(-45deg); }
+
+/* 左侧抽屉菜单 + 遮罩（ReceiptBin 同款，深色版：毛玻璃 + 金色高亮） */
+body.drawer-open { overflow: hidden; }
+.scrim { position: fixed; inset: 0; z-index: 90; background: rgba(0,0,0,.5);
+  opacity: 0; pointer-events: none; transition: opacity .28s ease; }
+.scrim.show { opacity: 1; pointer-events: auto; }
+.drawer { position: fixed; top: 0; left: 0; bottom: 0; z-index: 100; width: min(300px, 82vw);
+  background: rgba(28,28,30,.92); -webkit-backdrop-filter: blur(24px) saturate(180%); backdrop-filter: blur(24px) saturate(180%);
+  box-shadow: 4px 0 32px rgba(0,0,0,.4); transform: translateX(-105%);
+  transition: transform .3s cubic-bezier(.32,.72,0,1);
+  display: flex; flex-direction: column; padding: calc(16px + env(safe-area-inset-top)) 12px calc(16px + env(safe-area-inset-bottom));
+  will-change: transform; }
+.drawer.open { transform: translateX(0); }
+.drawer-head { padding: 8px 12px 16px; border-bottom: 1px solid #333336; margin-bottom: 8px; }
+.drawer-head .logo { font-weight: 700; font-size: 20px; }
+.drawer-head .sub { color: #888; font-size: 13px; margin-top: 2px; }
+.drawer nav { display: flex; flex-direction: column; gap: 2px; }
+.drawer-item { display: flex; align-items: center; gap: 12px; width: 100%;
+  padding: 12px; border: none; border-radius: 12px; background: none; color: #eee;
+  font-size: 16px; text-align: left; cursor: pointer; }
+.drawer-item:active { background: #2a2a2c; }
+.drawer-item.current { background: rgba(245,197,24,.14); color: #f5c518; font-weight: 600; }
+.drawer-item svg { width: 22px; height: 22px; flex: none; }
 /* 顶栏必须留出状态栏安全区：加到主屏幕后页面顶到屏幕最上方，没有这行，
    标题和筛选会被状态栏盖住、点不到 */
 .topbar { position: sticky; top: 0; z-index: 10; background: rgba(17,17,17,.96);
@@ -61,7 +91,7 @@ body { padding-bottom: calc(16px + env(safe-area-inset-bottom)); }
   font-weight: 700; }
 .count { font-size: 12px; color: #888; margin-top: 6px; }
 
-/* ---------- 状态页（v1.18）：顶栏“状态”进去看服务器状态 ---------- */
+/* ---------- 状态页（v1.18）：抽屉菜单「状态」进去看服务器状态 ---------- */
 .status-page { padding: 12px 14px 20px; }
 .status-actions { display: flex; gap: 6px; margin-bottom: 12px; }
 .status-actions button { background: #1e1e20; color: #ccc; border: 1px solid #333336;
