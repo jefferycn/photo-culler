@@ -178,6 +178,9 @@ function applyListData(data) {
     warnEl.hidden = true;
   }
   window.__cullerReady = true;
+  // 启动自检横幅如果已经误报出来了（脚本只是慢，不是坏了），
+  // 列表一到就把它藏起来，别一直顶在上面
+  document.getElementById('boot-error').hidden = true;
   const slidingIn = incomingSlide;
   incomingSlide = false;
   // 不是滑入的情况：新列表就绪的同一刻把右滑的位移清掉，和渲染同一帧
@@ -1163,3 +1166,9 @@ loadList().catch(err => {
 
 // ?view=status 直接进状态页（比如从别处贴个链接就能看）
 if (new URLSearchParams(location.search).get('view') === 'status') showStatus();
+
+// 脚本能跑到这里就说明加载成功了：ready 必须在模块末尾同步就设，
+// 不能等第一条 /api/list 回来——容器刚重启时冷启动 + 根目录数遍子目录
+// 很容易超过启动自检的 4 秒，横幅就误报了（页面其实是好的，
+// 截图里横幅下面网格都出来了，就是这么回事）。
+window.__cullerReady = true;
