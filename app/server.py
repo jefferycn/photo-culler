@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Photo culler 1.0.3 — 在局域网里看 NAS 照片、加星、保存到指定目录。
+"""Photo culler 1.0.4 — 在局域网里看 NAS 照片、加星、保存到指定目录。
 
 用法（Docker，见 ../docker-compose.yml）或直接跑：
     PHOTOS_DIR=/path/to/photos DEST_DIR=/path/to/picks DATA_DIR=./data python3 server.py
@@ -43,7 +43,7 @@ DEST_DIR = Path(os.environ.get("DEST_DIR", "/dest")).resolve()
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data")).resolve()
 PORT = int(os.environ.get("PORT", "8080"))
 HOST = os.environ.get("HOST", "0.0.0.0")
-VERSION = "1.0.3"
+VERSION = "1.0.4"
 WARM_ON_START = os.environ.get("WARM_ON_START", "1") == "1"
 # yandere 抓图（v1.17）：原来 PHP 脚本 i.php 的逻辑，见 app/yandere.py。
 # 间隔默认 6 小时，全部可用 .env 控制；YANDERE_BASE_URL 只是测试用的覆盖
@@ -184,19 +184,71 @@ def _first_photo(d: Path, root: str = "photos"):
     return None
 
 
-def _count_photos(d: Path, root: str = "photos"):
-    """文件夹里的照片数（递归）和其中已看过的数；一次遍历同时数出来。"""
+def _count_photos_fast(d: Path, root: str = "photos") -> int:
+    """数文件夹里的照片数（递归）。用 os.scandir + DirEntry.is_file()（d_type，
+    不用每个文件都 stat），比 Path.rglob + is_file() 快几倍；跳过 @eaDir/隐藏
+    目录和隐藏文件，和 _is_photo 一个口径；目录符号链接不跟进（和 rglob 默认
+    一致），文件符号链接指到照片也算。"""
     total = 0
-    viewed = 0
     try:
-        for f in d.rglob("*"):
-            if _is_photo(f, root):
-                total += 1
-                if _state["viewed"].get(viewed_key(rel_of(f, root), root)):
-                    viewed += 1
+        stack = [d]
+        while stack:
+            cur = stack.pop()
+            try:
+                with os.scandir(cur) as it:
+                    for entry in it:
+                        name = entry.name
+                        if name.startswith((".", "@")):
+                            continue
+                        try:
+                            if entry.is_dir(follow_symlinks=False):
+                                stack.append(Path(entry.path))
+                            elif (entry.is_file(follow_symlinks=False)
+                                    or (entry.is_symlink() and entry.is_file())):
+                                if os.path.splitext(name)[1].lower() in IMAGE_EXTS:
+                                    total += 1
+                        except OSError:
+                            continue
+            except OSError:
+                continue
     except Exception:
         pass
-    return total, viewed
+    return total
+
+
+# 文件夹照片数缓存（v1.0.4）：根列表原来每次都要数遍每个子目录（全库递归走一遍），
+# 库大了在 NAS 上要 2-3 秒。total 只随文件增减变，缓存 60 秒；viewed 在内存里
+# 按前缀数，永远是新的。服务端自己改了库（抓图、保存）就立刻清缓存；
+# 外面改了（File Station 删文件）最多 60 秒后过期。
+_folder_total_cache = {}  # (root, rel) -> (total, expires_at)
+_FOLDER_TOTAL_TTL = 60
+
+def _invalidate_folder_totals(root=None):
+    if root is None:
+        _folder_total_cache.clear()
+    else:
+        for k in [k for k in _folder_total_cache if k[0] == root]:
+            del _folder_total_cache[k]
+
+def _folder_total(d: Path, root: str = "photos") -> int:
+    key = (root, rel_of(d, root))
+    now = time.time()
+    hit = _folder_total_cache.get(key)
+    if hit and hit[1] > now:
+        return hit[0]
+    total = _count_photos_fast(d, root)
+    _folder_total_cache[key] = (total, now + _FOLDER_TOTAL_TTL)
+    return total
+
+def _folder_viewed(folder_rel: str, root: str = "photos") -> int:
+    """文件夹里已看过的张数：直接数内存里 state['viewed'] 中带这文件夹前缀的，
+    不用走磁盘；已删照片的已看记录可能还在，调用处用 total 封顶，不会超。"""
+    prefix = (folder_rel + "/") if folder_rel else ""
+    if root == "saved":
+        prefix = "dest:" + prefix
+    with _lock:
+        keys = list(_state["viewed"])
+    return sum(1 for k in keys if k.startswith(prefix))
 
 
 _library_check = {"at": 0, "has_photos": None, "root": None}
@@ -243,8 +295,10 @@ def list_photos(folder: str, recursive: bool = False, root: str = "photos"):
             mtime = int(d.stat().st_mtime)
         except Exception:
             mtime = 0
-        total, viewed = _count_photos(d, root)
-        folders.append({"path": rel_of(d, root), "name": d.name, "count": total,
+        rel = rel_of(d, root)
+        total = _folder_total(d, root)
+        viewed = min(_folder_viewed(rel, root), total)
+        folders.append({"path": rel, "name": d.name, "count": total,
                         "viewed": viewed, "mtime": mtime, "cover": _first_photo(d, root)})
     it = base.rglob("*") if recursive else base.iterdir()
     photos = []
@@ -463,6 +517,8 @@ def _run_yandere_round():
     print(f"yandere: lists ok={stats['lists_ok']} failed={stats['lists_failed']} "
           f"new={stats['new']} skipped={stats['skipped']} "
           f"failed={stats['failed']} aborted={stats['aborted']}", flush=True)
+    if stats.get("new"):
+        _invalidate_folder_totals("photos")  # 新图进库了，文件夹张数缓存作废
     for folder in stats.get("new_folders", []):
         try:
             rel = str(Path(folder).relative_to(PHOTOS_DIR))
@@ -691,6 +747,7 @@ class Handler(BaseHTTPRequestHandler):
                     shutil.copy2(src, dst)
                     _state["saved"][rel] = f"{year_dir.name}/{dst.name}"
                     save_state()
+                    _invalidate_folder_totals("saved")  # 收藏夹多了一张
                 self.send_json({"ok": True, "already": False,
                                 "dest": f"{year_dir.name}/{dst.name}"})
             elif u.path == "/api/save-all":
@@ -710,6 +767,8 @@ class Handler(BaseHTTPRequestHandler):
                         _state["saved"][rel] = f"{year_dir.name}/{dst.name}"
                         copied.append(f"{year_dir.name}/{dst.name}")
                     save_state()
+                    if copied:
+                        _invalidate_folder_totals("saved")  # 收藏夹多了几张
                 self.send_json({"ok": True, "copied": copied, "skipped": skipped})
             elif u.path == "/api/clean-thumbs":
                 # 手动清一次孤儿缩略图/预览图（NAS 上删了文件夹/照片后），
