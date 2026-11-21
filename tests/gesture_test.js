@@ -106,6 +106,11 @@ var root = 'photos';
 viewerPhotos = [{ path: 'a.jpg', name: 'a.jpg', saved: false }];
 var savePhotoCalls = [];
 function markViewedRange() {}
+// close 处理里调 renderGrid（1.0.5：修未看过筛选下标错位）：桩只计数
+var renderGridCalls = 0;
+function renderGrid() { renderGridCalls++; }
+var suppressResumeOnce = false;
+var lastViewed = null;
 function savePhoto(p) {
   savePhotoCalls.push(p);
   if (root === 'saved') return;  // 真实分支：收藏夹不播圆环，只 toast（桩里不发 toast）
@@ -388,6 +393,16 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     assert.strictEqual(vm.runInContext('firePointerMove(220, 385)', sandbox), false);
   });
   vm.runInContext(`touch('end', 220, 385, 15100, noTouch());`, sandbox);
+
+  // T19：看图器关闭时重绘网格（1.0.5）：筛选是“未看过”时，刚看过的几张
+  // 已经不在筛选里了，不重绘网格下标就错位；lastViewed 要原样留着，
+  // 下次回这个目录还能定位到上次看到的照片。
+  const beforeClose = S.renderGridCalls;
+  vm.runInContext(`lastViewed = 'a.jpg'; lightbox._handlers['close']();`, sandbox);
+  check('T19 close re-renders grid and keeps lastViewed', () => {
+    assert.strictEqual(S.renderGridCalls, beforeClose + 1);
+    assert.strictEqual(S.lastViewed, 'a.jpg');
+  });
 
   console.log(results.join('\n'));
   if (results.some(r => r.startsWith('FAIL'))) process.exit(1);

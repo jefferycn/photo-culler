@@ -21,7 +21,7 @@ import os
 import shutil
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
@@ -43,7 +43,7 @@ DEST_DIR = Path(os.environ.get("DEST_DIR", "/dest")).resolve()
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data")).resolve()
 PORT = int(os.environ.get("PORT", "8080"))
 HOST = os.environ.get("HOST", "0.0.0.0")
-VERSION = "1.0.4"
+VERSION = "1.0.5"
 WARM_ON_START = os.environ.get("WARM_ON_START", "1") == "1"
 # yandere 抓图（v1.17）：原来 PHP 脚本 i.php 的逻辑，见 app/yandere.py。
 # 间隔默认 6 小时，全部可用 .env 控制；YANDERE_BASE_URL 只是测试用的覆盖
@@ -74,6 +74,9 @@ _state = {"stars": {}, "saved": {}, "viewed": {}, "lastViewed": None,
           "lastViewedSaved": None}
 _dims = {}          # {"rel|mtime": [w, h]}
 _dims_dirty = False
+# 上次清理缓存的结果（启动 +10 秒跑一次，之后每 24 小时跑一次，
+# 状态页也能手动触发）：状态页显示用，告诉用户清理到底什么时候跑过。
+_last_cleanup = None
 
 
 def load_state():
@@ -422,13 +425,24 @@ def clean_thumb_cache():
     只删 THUMB_DIR 里的 *.jpg，不碰别的；正在预热的新图也在白名单里，
     不会误删；照片在枚举和删文件之间刚被删的，这次留着、下次清。
     顺手把 dims.json 里对不上的旧条目也清掉（只是宽高缓存，缺了会重读）。
-    返回删了几个、留了几个、释放了多少字节。"""
-    global _dims_dirty
+    再顺手把 state.json 里已删照片的记录（已看/已保存/星标）也清掉，
+    不然 state.json 只长不缩——但有保护：一个根目录下如果一张照片
+    都没了（整个挂载掉了），那个根目录的记录全不动；顶层文件夹还在、
+    但里面一张照片都没了（挂载掉了、挂载点还在），那个文件夹下的记录
+    也不动。顶层文件夹整个没了，才是真删了。
+    返回删了几个、留了几个、释放了多少字节、剪了几条状态记录。"""
+    global _dims_dirty, _last_cleanup
     kept = set()
+    # 现存照片 + 每个根目录下“还有照片”的顶层文件夹（剪 state 记录时用）
+    existing = {"photos": set(), "saved": set()}
+    alive_top = {"photos": set(), "saved": set()}
     try:
         for root in ("photos", "saved"):
             _, photos = list_photos("", recursive=True, root=root)
             for p in photos:
+                existing[root].add(p["path"])
+                if "/" in p["path"]:
+                    alive_top[root].add(p["path"].split("/")[0])
                 try:
                     src = safe_rel(p["path"], root)
                     mtime = int(src.stat().st_mtime)
@@ -437,7 +451,8 @@ def clean_thumb_cache():
                 kept.add(thumb_path(p["path"], mtime, root).name)
                 kept.add(preview_path(p["path"], mtime, root).name)
     except Exception:
-        return {"ok": False, "deleted": 0, "kept": 0, "freed_bytes": 0}
+        return {"ok": False, "deleted": 0, "kept": 0, "freed_bytes": 0,
+                "state_pruned": 0}
     deleted = 0
     freed = 0
     total = 0
@@ -480,8 +495,78 @@ def clean_thumb_cache():
             save_dims_if_dirty()
     except Exception:
         pass
-    return {"ok": True, "deleted": deleted, "kept": total - deleted,
-            "freed_bytes": freed}
+    # state.json：剪掉已删照片的记录（已看/已保存/星标/上次看到哪张）。
+    # 判断一张照片是不是真删了：文件还在就留着；文件没了看顶层文件夹——
+    # 文件夹里还有别的照片（在 alive_top 里），这张是单独被删了；
+    # 文件夹整个没了，是连文件夹一起删了；文件夹还在但空了，可能是
+    # 挂载掉了（挂载点还在、内容没了），记录留着，别把挂载故障当删除。
+    pruned = 0
+    try:
+        with _lock:
+            def gone(rel, root):
+                if rel in existing[root]:
+                    return False
+                if "/" not in rel:
+                    return True
+                top = rel.split("/")[0]
+                if top in alive_top[root]:
+                    return True
+                return not (root_base(root) / top).is_dir()
+
+            def root_alive(root):
+                return root_base(root).is_dir() and bool(existing[root])
+
+            for key in list(_state["viewed"]):
+                root, rel = (("saved", key[5:]) if key.startswith("dest:")
+                             else ("photos", key))
+                if root_alive(root) and gone(rel, root):
+                    _state["viewed"].pop(key, None)
+                    pruned += 1
+            for key in list(_state["stars"]):
+                if root_alive("photos") and gone(key, "photos"):
+                    _state["stars"].pop(key, None)
+                    pruned += 1
+            # 已保存的记录：源照片没了，或者收藏夹里的副本没了，都算过期
+            for key in list(_state["saved"]):
+                dest = _state["saved"].get(key)
+                src_gone = root_alive("photos") and gone(key, "photos")
+                dst_gone = (isinstance(dest, str) and root_alive("saved")
+                            and gone(dest, "saved"))
+                if src_gone or dst_gone:
+                    _state["saved"].pop(key, None)
+                    pruned += 1
+            if _state.get("lastViewed") and root_alive("photos") and \
+                    gone(_state["lastViewed"], "photos"):
+                _state["lastViewed"] = None
+                pruned += 1
+            if _state.get("lastViewedSaved") and root_alive("saved") and \
+                    gone(_state["lastViewedSaved"], "saved"):
+                _state["lastViewedSaved"] = None
+                pruned += 1
+            if pruned:
+                save_state()
+    except Exception:
+        pass
+    result = {"ok": True, "deleted": deleted, "kept": total - deleted,
+              "freed_bytes": freed, "state_pruned": pruned}
+    _last_cleanup = dict(result, time=datetime.now(timezone.utc)
+                         .isoformat().replace("+00:00", "Z"))
+    return result
+
+
+def thumb_cache_stats():
+    """缩略图缓存现状：多少张、共多大。状态页显示用，现算（几千个文件，十几毫秒）。"""
+    count = 0
+    total = 0
+    if THUMB_DIR.is_dir():
+        for f in THUMB_DIR.iterdir():
+            if f.is_file() and f.suffix.lower() == ".jpg":
+                count += 1
+                try:
+                    total += f.stat().st_size
+                except Exception:
+                    pass
+    return {"count": count, "bytes": total}
 
 
 def _clean_loop():
@@ -492,7 +577,8 @@ def _clean_loop():
         try:
             r = clean_thumb_cache()
             print(f"thumb cleanup: deleted {r['deleted']}, "
-                  f"kept {r['kept']}, freed {r['freed_bytes']} bytes", flush=True)
+                  f"kept {r['kept']}, freed {r['freed_bytes']} bytes, "
+                  f"state pruned {r.get('state_pruned', 0)}", flush=True)
         except Exception:
             pass
         time.sleep(24 * 3600)
@@ -684,12 +770,17 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(_state)
             elif u.path == "/api/yandere/status":
                 if yandere is None:
-                    self.send_json({"enabled": False, "error": "yandere module not loaded"})
+                    st = {"enabled": False,
+                          "error": "yandere module not loaded"}
                 else:
-                    self.send_json(yandere.status(
+                    st = yandere.status(
                         YANDERE_STATE_FILE, enabled=YANDERE_ENABLED,
                         interval_hours=YANDERE_INTERVAL_HOURS,
-                        version=VERSION))
+                        version=VERSION)
+                # 缓存清理现状也放这：状态页一个接口全拿到
+                st["cleanup"] = dict(_last_cleanup or {},
+                                     thumbs=thumb_cache_stats())
+                self.send_json(st)
             else:
                 self.send_error(404)
         except (ValueError, FileNotFoundError):

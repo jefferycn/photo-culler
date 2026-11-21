@@ -211,6 +211,7 @@ async function loadList() {
     return;
   }
   const data = await api(`/api/list?folder=${enc(folder)}&recursive=0&root=${root}`);
+  lastListFetchAt = Date.now();
   listCache.set(cacheKey(folder), data);
   applyListData(data);
 }
@@ -223,6 +224,7 @@ async function refreshListInBackground() {
   const targetRoot = root;
   try {
     const fresh = await api(`/api/list?folder=${enc(target)}&recursive=0&root=${targetRoot}`);
+    lastListFetchAt = Date.now();
     if (target !== folder || targetRoot !== root || viewerOpen) return;
     const old = listCache.get(cacheKey(target));
     const sig = d => JSON.stringify([d.folders, d.photos.map(p => p.path)]);
@@ -260,6 +262,24 @@ async function refreshListInBackground() {
 const scrollMemory = {};
 let pendingRestoreY = null;
 let suppressResumeOnce = false;
+
+// 上次拉列表的时间：回前台刷新时用，30 秒内刚拉过的跳过，别频繁打服务器
+let lastListFetchAt = 0;
+
+// 列表只在切目录时才后台刷新，页面一直开着就永远是旧的：PWA 在后台待着，
+// 期间 docker 里去掉的挂载还显示、新加的文件夹没出现、进度条还是旧的。
+// 三个时机补上：回前台、从 bfcache 恢复、每 5 分钟（页面一直开着的情况）。
+// 开着看图器、或者在状态页时不刷；有变化才重绘，没变化不碰页面。
+function refreshIfStale() {
+  if (view !== 'list' || viewerOpen || document.hidden) return;
+  if (Date.now() - lastListFetchAt < 30000) return;
+  refreshListInBackground();
+}
+document.addEventListener('visibilitychange', refreshIfStale);
+window.addEventListener('pageshow', e => { if (e.persisted) refreshIfStale(); });
+setInterval(() => {
+  if (view === 'list' && !viewerOpen && !document.hidden) refreshListInBackground();
+}, 5 * 60 * 1000);
 
 function navigateTo(target) {
   scrollMemory[scrollKey(folder)] = window.scrollY;
@@ -463,6 +483,7 @@ syncDrawerUI();
 const statusPage = document.getElementById('status-page');
 const statusBody = document.getElementById('status-body');
 const statusRunBtn = document.getElementById('status-run');
+const statusCleanBtn = document.getElementById('status-clean');
 let statusPollTimer = null;
 
 const esc = s => String(s).replace(/[&<>"']/g, c =>
@@ -480,6 +501,13 @@ function ago(iso) {
   const hours = Math.floor(mins / 60);
   if (hours < 24) return `（${hours} 小时前）`;
   return `（${Math.floor(hours / 24)} 天前）`;
+}
+function fmtBytes(n) {
+  if (n == null || isNaN(n)) return '—';
+  if (n >= 1024 ** 3) return (n / 1024 ** 3).toFixed(1) + ' GB';
+  if (n >= 1024 ** 2) return (n / 1024 ** 2).toFixed(1) + ' MB';
+  if (n >= 1024) return Math.round(n / 1024) + ' KB';
+  return n + ' B';
 }
 function row(k, v, cls) {
   return `<div class="status-row"><span class="k">${k}</span>` +
@@ -499,6 +527,17 @@ function renderStatusHTML(s) {
     ? '<ul class="status-errors">' +
       st.errors.slice(0, 5).map(e => `<li>${esc(e)}</li>`).join('') + '</ul>'
     : '';
+  // 缓存清理：删文件夹后缩略图/状态记录什么时候清、清了多少，这里能看到；
+  // 手动清点上面的「清理缓存」，不用等 24 小时一轮。
+  const c = s.cleanup || {};
+  const thumbs = c.thumbs || {};
+  const cleanup = `<div class="status-section">缓存清理</div><div class="status-card">` +
+    row('缩略图缓存', (thumbs.count != null ? esc(thumbs.count) + ' 张 · ' : '') + fmtBytes(thumbs.bytes)) +
+    row('清理周期', '启动后 10 秒，之后每 24 小时') +
+    row('上次清理', c.time ? fmtTime(c.time) + ago(c.time) : '还没清理过') +
+    row('上次清理结果', !c.time ? '—' :
+      `删 ${c.deleted} 张孤儿缓存 · 释放 ${fmtBytes(c.freed_bytes)} · 状态记录剪 ${c.state_pruned} 条`) +
+    `</div>`;
   return `<div class="status-section">服务</div><div class="status-card">` +
     row('版本', s.version ? 'PhotoCuller/' + esc(s.version) : '—') +
     row('抓图', s.enabled ? '开' : '关') +
@@ -511,7 +550,7 @@ function renderStatusHTML(s) {
     row('本轮状态', roundState, roundCls) +
     row('本轮统计', roundNums) +
     row('最近错误', s.last_error ? esc(s.last_error) : '无', s.last_error ? 'bad' : '') +
-    `</div>` + errors;
+    `</div>` + cleanup + errors;
 }
 async function loadStatus() {
   statusBody.innerHTML = '<div class="status-loading">加载中…</div>';
@@ -554,6 +593,23 @@ async function runYandereNow() {
     statusRunBtn.textContent = '立即抓图';
   }
 }
+async function cleanThumbsNow() {
+  if (statusCleanBtn.disabled) return;
+  statusCleanBtn.disabled = true;
+  statusCleanBtn.textContent = '清理中…';
+  try {
+    const r = await post('/api/clean-thumbs', {});
+    toast(r.ok
+      ? `清掉 ${r.deleted} 张孤儿缓存，释放 ${fmtBytes(r.freed_bytes)}，状态记录剪了 ${r.state_pruned} 条`
+      : '清理失败');
+    loadStatus();
+  } catch (e) {
+    toast('清理失败：' + e.message);
+  } finally {
+    statusCleanBtn.disabled = false;
+    statusCleanBtn.textContent = '清理缓存';
+  }
+}
 function showStatus() {
   if (view === 'status') return;
   view = 'status';
@@ -587,6 +643,7 @@ function showList() {
 }
 document.getElementById('status-refresh').addEventListener('click', loadStatus);
 statusRunBtn.addEventListener('click', runYandereNow);
+statusCleanBtn.addEventListener('click', cleanThumbsNow);
 // 状态页开着时每 30 秒刷新一次；切走了就不刷
 setInterval(() => { if (view === 'status') loadStatus(); }, 30000);
 
@@ -1123,6 +1180,15 @@ lightbox.on('close', () => {
   progressEl = null;
   saveRingEl = null;
   saveRingFill = null;
+  // 关掉后网格按当前筛选重绘一遍：筛选是“未看过”时，刚看过的几张
+  // 已经不在筛选里了；不重绘的话它们还占着原来的格子（只是变灰），
+  // 再点进去 openViewer 按新筛选数下标，就会打开错的那张。
+  // 只刷新内容、不跳滚动：suppressResumeOnce 拦住“回到上次看到的照片”，
+  // lastViewed 先存起来再还回去，下次回这个目录还能定位。
+  const lv = lastViewed;
+  suppressResumeOnce = true;
+  renderGrid();
+  lastViewed = lv;
 });
 lightbox.init();
 
