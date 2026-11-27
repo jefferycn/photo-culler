@@ -40,6 +40,12 @@ body { padding-bottom: calc(16px + env(safe-area-inset-bottom)); }
    三个视图（照片库 / 收藏夹 / 状态）都在抽屉里，不再是顶栏分段切换 */
 .topbar-row { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
 .topbar-title { font-size: 17px; font-weight: 700; }
+/* 收藏夹「重复」开关：跨目录找一模一样的照片，只在收藏夹列表页出现 */
+.dup-btn { margin-left: auto; background: #1e1e20; color: #ccc;
+  border: 1px solid #333336; border-radius: 999px; padding: 7px 13px;
+  font-size: 14px; white-space: nowrap; }
+.dup-btn.active { background: #f5c518; color: #111; border-color: #f5c518;
+  font-weight: 700; }
 .burger { display: flex; flex-direction: column; align-items: center; justify-content: center;
   gap: 5px; width: 34px; height: 34px; border: none; border-radius: 50%;
   background: #1e1e20; cursor: pointer; padding: 0; touch-action: manipulation; flex: none; }

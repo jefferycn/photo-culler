@@ -9,6 +9,7 @@ const toastEl = document.getElementById('toast');
 const ptrEl = document.getElementById('ptr');
 const ptrText = document.getElementById('ptr-text');
 const filtersEl = document.querySelector('.filters');
+const dupBtn = document.getElementById('dupBtn');
 const pageContent = document.getElementById('page-content');
 const backHint = document.getElementById('back-hint');
 
@@ -27,6 +28,13 @@ const viewState = {
 };
 folder = viewState[root].folder;
 filter = viewState[root].filter;
+// 收藏夹「重复」视图：跨目录找一模一样的照片（服务端按内容哈希分组），
+// 和当前目录无关，所以单独记一份列表，不走目录筛选
+let duplicateMode = false;
+let duplicatePhotos = [];
+let duplicateStats = null;
+let duplicateLoading = false;
+let lastDuplicateFetchAt = 0;
 const cacheKey = f => `${root}:${f}`;
 const scrollKey = f => `${root}:${f}`;
 
@@ -60,6 +68,7 @@ document.getElementById('homescreen-dismiss').addEventListener('click', () => {
 
 // ---------- 列表 ----------
 function visiblePhotos() {
+  if (duplicateMode) return duplicatePhotos;  // 服务端已按组排好，同组相邻
   if (filter === 'unviewed') return allPhotos.filter(p => !p.viewed);
   if (filter === 'viewed') return allPhotos.filter(p => p.viewed);
   if (filter === 'saved') return allPhotos.filter(p => p.saved);
@@ -68,6 +77,13 @@ function visiblePhotos() {
 
 function refreshCounts() {
   const vis = visiblePhotos();
+  if (duplicateMode) {
+    const groups = duplicateStats ? duplicateStats.duplicate_groups : 0;
+    countEl.textContent = (duplicateLoading && !duplicatePhotos.length)
+      ? '正在找重复图片…'
+      : `${duplicatePhotos.length} 张重复 · ${groups} 组 · 已看 ${duplicatePhotos.filter(p => p.viewed).length}`;
+    return;
+  }
   // 收藏夹里全是已保存的，不显示“已保存 X”，只显示张数和已看
   countEl.textContent = root === 'saved'
     ? `${vis.length} 张 · 已看 ${allPhotos.filter(p => p.viewed).length}`
@@ -76,6 +92,8 @@ function refreshCounts() {
 }
 
 function renderCrumbs() {
+  // 重复视图是跨目录的，和当前目录无关，面包屑藏起来免得误会
+  if (duplicateMode) { crumbsEl.hidden = true; return; }
   const parts = folder ? folder.split('/') : [];
   // 根目录不显示面包屑：顶栏标题已经是“照片库/收藏夹”了，再显示一排
   // 就是重复；进了文件夹才显示（照片库 › 2026-11-04），根那颗还能点回根目录
@@ -99,6 +117,9 @@ function renderCrumbs() {
 }
 
 function renderFolders() {
+  // 重复视图只看重复照片，不显示文件夹
+  if (duplicateMode) { foldersEl.innerHTML = ''; foldersEl.hidden = true; return; }
+  foldersEl.hidden = false;
   foldersEl.innerHTML = '';
   // 排序：没看完的排前面，按更改日期倒序（新改过的在前）；
   // 看完的排后面，按文件夹名正序
@@ -137,15 +158,25 @@ function renderGrid() {
   grid.innerHTML = '';
   // 没照片的目录：筛选行和张数行都不显示（只留文件夹和“这里还没有照片”）
   const hasPhotos = allPhotos.length > 0;
-  filtersEl.hidden = !hasPhotos;
-  countEl.hidden = !hasPhotos;
-  // 收藏夹里全是已保存的，“已保存”这颗筛它等于全部，不显示
-  const savedBtn = filtersEl.querySelector('button[data-filter="saved"]');
-  if (savedBtn) savedBtn.hidden = root === 'saved';
-  emptyEl.hidden = vis.length > 0 || folders.length > 0;
-  emptyEl.textContent = !hasPhotos && folders.length === 0 && root === 'saved'
-    ? '收藏夹还是空的，去照片库上滑保存一张吧'
-    : (hasPhotos ? '没有符合条件的照片' : '这里还没有照片');
+  if (duplicateMode) {
+    // 重复视图：筛选行藏起来（它和目录筛选无关），张数行显示重复统计
+    filtersEl.hidden = true;
+    countEl.hidden = false;
+    emptyEl.hidden = vis.length > 0;
+    emptyEl.textContent = duplicateLoading
+      ? '正在找重复图片…'
+      : '收藏夹里没有一模一样的图片';
+  } else {
+    filtersEl.hidden = !hasPhotos;
+    countEl.hidden = !hasPhotos;
+    // 收藏夹里全是已保存的，“已保存”这颗筛它等于全部，不显示
+    const savedBtn = filtersEl.querySelector('button[data-filter="saved"]');
+    if (savedBtn) savedBtn.hidden = root === 'saved';
+    emptyEl.hidden = vis.length > 0 || folders.length > 0;
+    emptyEl.textContent = !hasPhotos && folders.length === 0 && root === 'saved'
+      ? '收藏夹还是空的，去照片库上滑保存一张吧'
+      : (hasPhotos ? '没有符合条件的照片' : '这里还没有照片');
+  }
   for (const [i, p] of vis.entries()) {
     const tile = document.createElement('div');
     // 收藏夹里不描绿边：全是已保存的，再画就是噪音；看过变灰照常
@@ -158,7 +189,8 @@ function renderGrid() {
     grid.appendChild(tile);
   }
   refreshCounts();
-  return resumeScroll();
+  // 重复视图不做“上次看到哪张”定位，进来就从头看
+  return duplicateMode ? false : resumeScroll();
 }
 
 // 列表缓存：每个目录拉过一次就记下来。回上级目录时上级一定在缓存里，
@@ -214,6 +246,33 @@ async function loadList() {
   lastListFetchAt = Date.now();
   listCache.set(cacheKey(folder), data);
   applyListData(data);
+}
+
+// 重复视图的数据：服务端跨目录按内容哈希分组，返回已按组排好的照片。
+// 哈希有缓存，第一次可能要几秒（只算同大小候选），之后很快。
+async function loadDuplicates(announce = true) {
+  if (root !== 'saved' || duplicateLoading) return false;
+  duplicateLoading = true;
+  renderGrid();
+  try {
+    const data = await api('/api/duplicates?root=saved');
+    duplicatePhotos = data.photos || [];
+    duplicateStats = data;
+    lastDuplicateFetchAt = Date.now();
+    duplicateLoading = false;
+    renderGrid();
+    if (announce) {
+      toast(duplicatePhotos.length
+        ? `找到 ${data.duplicate_groups} 组重复，共 ${duplicatePhotos.length} 张`
+        : '没有一模一样的图片');
+    }
+    return true;
+  } catch (e) {
+    duplicateLoading = false;
+    renderGrid();
+    toast('找重复失败，请重试');
+    return false;
+  }
 }
 
 // 后台刷新当前目录：只看结构变没变（文件夹、照片有没有增减），
@@ -272,13 +331,20 @@ let lastListFetchAt = 0;
 // 开着看图器、或者在状态页时不刷；有变化才重绘，没变化不碰页面。
 function refreshIfStale() {
   if (view !== 'list' || viewerOpen || document.hidden) return;
+  if (duplicateMode) {
+    if (Date.now() - lastDuplicateFetchAt < 30000) return;
+    loadDuplicates(false);
+    return;
+  }
   if (Date.now() - lastListFetchAt < 30000) return;
   refreshListInBackground();
 }
 document.addEventListener('visibilitychange', refreshIfStale);
 window.addEventListener('pageshow', e => { if (e.persisted) refreshIfStale(); });
 setInterval(() => {
-  if (view === 'list' && !viewerOpen && !document.hidden) refreshListInBackground();
+  if (view !== 'list' || viewerOpen || document.hidden) return;
+  if (duplicateMode) loadDuplicates(false);
+  else refreshListInBackground();
 }, 5 * 60 * 1000);
 
 function navigateTo(target) {
@@ -317,6 +383,15 @@ function resumeScroll() {
 function markViewed(p) {
   if (!p || p.viewed) return;
   p.viewed = true;
+  // 同一张照片在目录列表和重复列表里是两个对象，已看状态要同步，
+  // 不然从重复视图看完、切回目录，那张还亮着
+  for (const list of [allPhotos, duplicatePhotos]) {
+    for (const q of list) if (q.path === p.path) q.viewed = true;
+  }
+  for (const [key, data] of listCache) {
+    if (!key.startsWith(root + ':')) continue;  // 已看按视图分开记，别串到另一个视图
+    for (const q of data.photos || []) if (q.path === p.path) q.viewed = true;
+  }
   lastViewed = p.path;
   // 已看按视图分开记：服务端用 dest: 前缀区分收藏夹
   post('/api/viewed', { path: p.path, root }).catch(() => {});
@@ -429,8 +504,27 @@ drawerEl.addEventListener('touchend', e => {
   drawerTouchX = null;
 }, { passive: true });
 
+// 「重复」按钮只在收藏夹列表页出现；重复视图里它变「全部」，点一下回去
+function syncDupBtn() {
+  dupBtn.hidden = !(view === 'list' && root === 'saved');
+  dupBtn.classList.toggle('active', duplicateMode);
+  dupBtn.textContent = duplicateMode ? '全部' : '重复';
+}
+function toggleDuplicates() {
+  if (root !== 'saved' || view !== 'list' || viewerOpen) return;
+  duplicateMode = !duplicateMode;
+  syncDupBtn();
+  window.scrollTo(0, 0);
+  renderCrumbs();
+  renderFolders();
+  if (duplicateMode) loadDuplicates();
+  else renderGrid();
+}
+dupBtn.addEventListener('click', toggleDuplicates);
+
 function syncDrawerUI() {
   const current = view === 'status' ? 'status' : root;
+  syncDupBtn();
   document.querySelectorAll('.drawer-item[data-nav]').forEach(b => {
     b.classList.toggle('current', b.dataset.nav === current);
   });
@@ -451,6 +545,7 @@ function switchRoot(newRoot) {
   viewState[root].folder = folder;
   viewState[root].filter = filter;
   root = newRoot;
+  duplicateMode = false;  // 重复视图只属于收藏夹，切走就关掉
   localStorage.setItem('culler-root', root);
   folder = viewState[root].folder;
   filter = viewState[root].filter;
@@ -736,7 +831,8 @@ document.addEventListener('touchmove', e => {
   const dy = t.clientY - pageTouch.y;
   if (!pageTouch.mode) {
     if (dy > 12 && Math.abs(dy) > Math.abs(dx) && pageTouch.atTop) pageTouch.mode = 'ptr';
-    else if (dx > 12 && dx > Math.abs(dy) && folder) pageTouch.mode = 'back';
+    // 重复视图是跨目录的，没有“上级”，右滑回上级不启用
+    else if (dx > 12 && dx > Math.abs(dy) && folder && !duplicateMode) pageTouch.mode = 'back';
     else return;
   }
   if (pageTouch.mode === 'ptr') {
@@ -770,9 +866,14 @@ document.addEventListener('touchend', async e => {
       ptrEl.style.transition = 'transform .2s ease';
       ptrEl.style.transform = 'translateY(0)';
       try {
-        listCache.delete(cacheKey(folder));  // 下拉刷新要拉新的，不能用缓存
-        await loadList();
-        ptrText.textContent = '✓ 已刷新';
+        if (duplicateMode) {
+          // 重复视图下拉刷新就是重扫一遍；失败时 loadDuplicates 已弹提示
+          ptrText.textContent = (await loadDuplicates(false)) ? '✓ 已刷新' : '刷新失败';
+        } else {
+          listCache.delete(cacheKey(folder));  // 下拉刷新要拉新的，不能用缓存
+          await loadList();
+          ptrText.textContent = '✓ 已刷新';
+        }
       }
       catch { ptrText.textContent = '刷新失败'; }
       setTimeout(() => {

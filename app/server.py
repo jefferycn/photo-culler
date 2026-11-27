@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Photo culler 1.0.4 — 在局域网里看 NAS 照片、加星、保存到指定目录。
+"""Photo culler 1.0.6 — 在局域网里看 NAS 照片、加星、保存到指定目录。
 
 用法（Docker，见 ../docker-compose.yml）或直接跑：
     PHOTOS_DIR=/path/to/photos DEST_DIR=/path/to/picks DATA_DIR=./data python3 server.py
@@ -43,7 +43,7 @@ DEST_DIR = Path(os.environ.get("DEST_DIR", "/dest")).resolve()
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data")).resolve()
 PORT = int(os.environ.get("PORT", "8080"))
 HOST = os.environ.get("HOST", "0.0.0.0")
-VERSION = "1.0.5"
+VERSION = "1.0.6"
 WARM_ON_START = os.environ.get("WARM_ON_START", "1") == "1"
 # yandere 抓图（v1.17）：原来 PHP 脚本 i.php 的逻辑，见 app/yandere.py。
 # 间隔默认 6 小时，全部可用 .env 控制；YANDERE_BASE_URL 只是测试用的覆盖
@@ -63,6 +63,7 @@ THUMB_DIR = DATA_DIR / ".thumbs"
 STATE_FILE = DATA_DIR / "state.json"
 YANDERE_STATE_FILE = DATA_DIR / "yandere.json"
 DIMS_FILE = DATA_DIR / "dims.json"
+HASH_FILE = DATA_DIR / "hashes.json"
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tif", ".tiff",
               ".heic", ".heif"}
 THUMB_SIZE = (400, 400)
@@ -74,6 +75,8 @@ _state = {"stars": {}, "saved": {}, "viewed": {}, "lastViewed": None,
           "lastViewedSaved": None}
 _dims = {}          # {"rel|mtime": [w, h]}
 _dims_dirty = False
+_hash_cache = None  # {root: {rel: {"size": n, "mtime": n, "sha256": "..."}}}
+_dup_lock = threading.Lock()  # 重复扫描串行跑，避免两个请求同时算哈希/写缓存
 # 上次清理缓存的结果（启动 +10 秒跑一次，之后每 24 小时跑一次，
 # 状态页也能手动触发）：状态页显示用，告诉用户清理到底什么时候跑过。
 _last_cleanup = None
@@ -118,6 +121,36 @@ def save_dims_if_dirty():
     except Exception:
         pass
     _dims_dirty = False
+
+
+def load_hash_cache():
+    """重复扫描用的内容哈希缓存：文件没变（大小+mtime 对上）就不用重读原图算哈希。"""
+    global _hash_cache
+    if _hash_cache is not None:
+        return _hash_cache
+    try:
+        data = json.loads(HASH_FILE.read_text())
+        if not isinstance(data, dict):
+            data = {}
+    except Exception:
+        data = {}
+    _hash_cache = {
+        root: (data.get(root) if isinstance(data.get(root), dict) else {})
+        for root in ("photos", "saved")
+    }
+    return _hash_cache
+
+
+def save_hash_cache():
+    if _hash_cache is None:
+        return
+    try:
+        HASH_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = HASH_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(_hash_cache, ensure_ascii=False))
+        tmp.replace(HASH_FILE)
+    except Exception:
+        pass
 
 
 def root_base(root: str) -> Path:
@@ -329,6 +362,101 @@ def list_photos(folder: str, recursive: bool = False, root: str = "photos"):
         })
     save_dims_if_dirty()
     return folders, photos
+
+
+def _sha256_file(p: Path) -> str:
+    h = hashlib.sha256()
+    with p.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def find_duplicates(root: str = "saved"):
+    """跨目录找一模一样的照片：文件大小相同才可能是同一份内容，再用
+    SHA-256 确认字节完全相同。只算同大小候选的哈希（几千张里绝大多数
+    大小唯一、直接跳过），算过的哈希按 大小+mtime 缓存到 hashes.json，
+    文件没变就不重读原图。返回的照片按组排好：同组相邻，组内按路径排，
+    前端直接当普通照片列表渲染即可。"""
+    if root not in ("photos", "saved"):
+        raise ValueError("bad root")
+    started = time.time()
+    with _dup_lock:
+        _, photos = list_photos("", recursive=True, root=root)
+        by_size = {}
+        for p in photos:
+            size = p.get("size") or 0
+            if size > 0:
+                by_size.setdefault(size, []).append(p)
+        candidates = [p for group in by_size.values() if len(group) > 1
+                      for p in group]
+        cache = load_hash_cache()
+        old = cache.get(root, {})
+        if not isinstance(old, dict):
+            old = {}
+        new_cache = {}
+        # 先把还有效的旧哈希带过来（哪怕这张现在大小唯一：以后多一张
+        # 同大小的进来，也不用重算）；文件没了/改过的条目自然掉出去
+        for p in photos:
+            ent = old.get(p["path"])
+            if (isinstance(ent, dict) and ent.get("size") == p.get("size")
+                    and ent.get("mtime") == p.get("mtime")
+                    and isinstance(ent.get("sha256"), str)):
+                new_cache[p["path"]] = ent
+        hashed = 0
+        cached = 0
+        errors = 0
+        by_hash = {}
+        for p in candidates:
+            rel = p["path"]
+            ent = new_cache.get(rel)
+            if ent is not None:
+                digest = ent["sha256"]
+                cached += 1
+            else:
+                try:
+                    digest = _sha256_file(safe_rel(rel, root))
+                except Exception:
+                    errors += 1
+                    continue
+                hashed += 1
+                new_cache[rel] = {"size": p["size"], "mtime": p["mtime"],
+                                  "sha256": digest}
+            by_hash.setdefault((p["size"], digest), []).append(p)
+        groups = []
+        for (size, _digest), group in by_hash.items():
+            if len(group) < 2:
+                continue
+            group = sorted(group, key=lambda x: x["path"])
+            groups.append({"size": size, "count": len(group), "photos": group})
+        groups.sort(key=lambda g: (-g["count"], -g["size"],
+                                   g["photos"][0]["path"]))
+        flat = []
+        wasted = 0
+        for gi, g in enumerate(groups):
+            wasted += g["size"] * (g["count"] - 1)
+            for p in g["photos"]:
+                q = dict(p)
+                q["dupGroup"] = gi
+                q["dupCount"] = g["count"]
+                flat.append(q)
+        if new_cache != old:
+            cache[root] = new_cache
+            save_hash_cache()
+        return {
+            "ok": True,
+            "root": root,
+            "photos": flat,
+            "duplicate_groups": len(groups),
+            "duplicate_photos": len(flat),
+            "wasted_bytes": wasted,
+            "scanned": len(photos),
+            "candidates": len(candidates),
+            "hashed": hashed,
+            "cached": cached,
+            "errors": errors,
+            "elapsed_ms": int((time.time() - started) * 1000),
+        }
 
 
 def image_size(p: Path):
@@ -732,6 +860,13 @@ class Handler(BaseHTTPRequestHandler):
                                                if root == "saved"
                                                else _state.get("lastViewed")),
                                 "warning": warning})
+            elif u.path == "/api/duplicates":
+                # 跨目录找一模一样的照片（收藏夹「重复」视图用）：
+                # 同大小才算 SHA-256，哈希有缓存，几千张也快
+                root = q.get("root", ["saved"])[0]
+                if root not in ("photos", "saved"):
+                    raise ValueError("bad root")
+                self.send_json(find_duplicates(root))
             elif u.path == "/api/dims":
                 rel = q.get("path", [""])[0]
                 root = q.get("root", ["photos"])[0]
