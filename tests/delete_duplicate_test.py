@@ -59,6 +59,10 @@ cache = json.loads(server.HASH_FILE.read_text())["saved"]
 assert "2026/b.jpg" not in cache, cache
 assert not server.thumb_path("2026/b.jpg", b["mtime"], "saved").exists()
 assert not server.preview_path("2026/b.jpg", b["mtime"], "saved").exists()
+# 删除后扫描结果缓存同步更新，后面的删除不用全量重扫
+cached = server._dup_cache["saved"]["result"]
+assert [p["path"] for p in cached["photos"]] == ["2025/a.jpg", "2026/c.jpg"], cached
+assert cached["duplicate_groups"] == 1 and cached["duplicate_photos"] == 2, cached
 
 # 删 a：组里只剩 c 一张，组消失
 r2 = server.delete_duplicate("2025/a.jpg")

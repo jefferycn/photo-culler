@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Photo culler 1.0.8 — 在局域网里看 NAS 照片、加星、保存到指定目录。
+"""Photo culler 1.0.9 — 在局域网里看 NAS 照片、加星、保存到指定目录。
 
 用法（Docker，见 ../docker-compose.yml）或直接跑：
     PHOTOS_DIR=/path/to/photos DEST_DIR=/path/to/picks DATA_DIR=./data python3 server.py
@@ -43,7 +43,7 @@ DEST_DIR = Path(os.environ.get("DEST_DIR", "/dest")).resolve()
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data")).resolve()
 PORT = int(os.environ.get("PORT", "8080"))
 HOST = os.environ.get("HOST", "0.0.0.0")
-VERSION = "1.0.8"
+VERSION = "1.0.9"
 WARM_ON_START = os.environ.get("WARM_ON_START", "1") == "1"
 # yandere 抓图（v1.17）：原来 PHP 脚本 i.php 的逻辑，见 app/yandere.py。
 # 间隔默认 6 小时，全部可用 .env 控制；YANDERE_BASE_URL 只是测试用的覆盖
@@ -77,6 +77,8 @@ _dims = {}          # {"rel|mtime": [w, h]}
 _dims_dirty = False
 _hash_cache = None  # {root: {rel: {"size": n, "mtime": n, "sha256": "..."}}}
 _dup_lock = threading.Lock()  # 重复扫描串行跑，避免两个请求同时算哈希/写缓存
+_dup_cache = {}  # {root: {"at": ts, "result": find_duplicates 的返回}}，进重复页先用它
+_DUP_CACHE_TTL = 30  # 秒；下拉刷新强制重扫，移动/保存/抓图会立刻作废
 # 上次清理缓存的结果（启动 +10 秒跑一次，之后每 24 小时跑一次，
 # 状态页也能手动触发）：状态页显示用，告诉用户清理到底什么时候跑过。
 _last_cleanup = None
@@ -372,6 +374,64 @@ def _sha256_file(p: Path) -> str:
     return h.hexdigest()
 
 
+def _scan_photos_light(root: str):
+    """重复扫描专用的轻量枚举：os.scandir 走一遍，每张只 stat 一次拿
+    大小+mtime，不算文件夹张数、不读图片宽高（宽高只查内存缓存，没有就
+    None，看图器会自己补）。list_photos 递归版每张要 stat 三次还带
+    rglob+排序，几千张在 NAS 上要跑一两秒，扫描用不上那些。"""
+    base = root_base(root)
+    photos = []
+    if not base.is_dir():
+        return photos
+    with _lock:
+        viewed_map = dict(_state["viewed"])
+        saved_map = dict(_state["saved"])
+        stars_map = dict(_state["stars"])
+    stack = [(base, "")]
+    while stack:
+        d, rel_dir = stack.pop()
+        try:
+            entries = list(os.scandir(d))
+        except Exception:
+            continue
+        for e in entries:
+            name = e.name
+            if name.startswith((".", "@")):
+                continue
+            try:
+                if e.is_dir(follow_symlinks=False):
+                    stack.append((Path(e.path),
+                                  f"{rel_dir}/{name}" if rel_dir else name))
+                    continue
+                if not e.is_file():
+                    continue
+            except Exception:
+                continue
+            if Path(name).suffix.lower() not in IMAGE_EXTS:
+                continue
+            try:
+                st = e.stat()
+            except Exception:
+                continue
+            rel = f"{rel_dir}/{name}" if rel_dir else name
+            mtime = int(st.st_mtime)
+            dims = _dims.get(f"{root}|{rel}|{mtime}")
+            photos.append({
+                "path": rel,
+                "name": name,
+                "folder": rel_dir,
+                "size": st.st_size,
+                "mtime": mtime,
+                "width": dims[0] if dims else None,
+                "height": dims[1] if dims else None,
+                "starred": bool(stars_map.get(rel)) if root == "photos" else False,
+                "saved": True if root == "saved" else rel in saved_map,
+                "savedDest": rel if root == "saved" else saved_map.get(rel),
+                "viewed": bool(viewed_map.get(viewed_key(rel, root))),
+            })
+    return photos
+
+
 def find_duplicates(root: str = "saved"):
     """跨目录找一模一样的照片：文件大小相同才可能是同一份内容，再用
     SHA-256 确认字节完全相同。只算同大小候选的哈希（几千张里绝大多数
@@ -382,7 +442,7 @@ def find_duplicates(root: str = "saved"):
         raise ValueError("bad root")
     started = time.time()
     with _dup_lock:
-        _, photos = list_photos("", recursive=True, root=root)
+        photos = _scan_photos_light(root)
         by_size = {}
         for p in photos:
             size = p.get("size") or 0
@@ -443,7 +503,7 @@ def find_duplicates(root: str = "saved"):
         if new_cache != old:
             cache[root] = new_cache
             save_hash_cache()
-        return {
+        result = {
             "ok": True,
             "root": root,
             "photos": flat,
@@ -457,23 +517,86 @@ def find_duplicates(root: str = "saved"):
             "errors": errors,
             "elapsed_ms": int((time.time() - started) * 1000),
         }
+        _dup_cache[root] = {"at": time.time(), "result": result}
+        return result
+
+
+def _dup_cache_verify(rel: str):
+    """用上次扫描结果快速确认 rel 还在重复组里：它和同组至少另一张的
+    大小+mtime 都和扫描时一致，就说明文件没被动过、还是重复。
+    对不上（文件没了/改过/不在缓存里）返回 None，调用方走全量扫描。"""
+    entry = _dup_cache.get("saved")
+    if not entry:
+        return None
+    photos = entry["result"]["photos"]
+    target = next((x for x in photos if x["path"] == rel), None)
+    if target is None:
+        return None
+
+    def unchanged(photo):
+        try:
+            st = safe_rel(photo["path"], "saved").stat()
+        except Exception:
+            return False
+        return st.st_size == photo["size"] and int(st.st_mtime) == photo["mtime"]
+
+    if not unchanged(target):
+        return None
+    others = [x for x in photos
+              if x["dupGroup"] == target["dupGroup"] and x["path"] != rel]
+    if not any(unchanged(x) for x in others):
+        return None
+    return target
+
+
+def _dup_cache_remove(rel: str):
+    """删完一张后把缓存结果同步更新：去掉它，组里剩一张的组也去掉，
+    后面的删除和进重复页直接用缓存，不用重扫。"""
+    entry = _dup_cache.get("saved")
+    if not entry:
+        return
+    result = entry["result"]
+    photos = [x for x in result["photos"] if x["path"] != rel]
+    by_group = {}
+    for x in photos:
+        by_group.setdefault(x["dupGroup"], []).append(x)
+    flat = []
+    wasted = 0
+    for group in by_group.values():
+        if len(group) < 2:
+            continue
+        wasted += group[0]["size"] * (len(group) - 1)
+        for x in group:
+            x["dupCount"] = len(group)
+            flat.append(x)
+    flat.sort(key=lambda x: (x["dupGroup"], x["path"]))
+    result["photos"] = flat
+    result["duplicate_photos"] = len(flat)
+    result["duplicate_groups"] = len({x["dupGroup"] for x in flat})
+    result["wasted_bytes"] = wasted
+    result["scanned"] = max(0, result.get("scanned", 1) - 1)
+    entry["at"] = time.time()
 
 
 def delete_duplicate(rel: str):
-    """删掉收藏夹里一张多余的重复照片。删之前现扫一遍确认它还在重复组里：
+    """删掉收藏夹里一张多余的重复照片。先用上次扫描结果快速确认它还在
+    重复组里（同组另一张大小+mtime 没变），确认不了才全量扫描；
     组里只剩一张（或已经不是重复）就拒绝，最后一张永远删不掉。
     删完顺手剪掉它的已看/已保存记录、哈希缓存和缩略图缓存，
     不用等每日清理。"""
     p = safe_rel(rel, "saved")
     if not p.is_file() or not _is_photo(p, "saved"):
         raise FileNotFoundError(rel)
-    dup = find_duplicates("saved")
-    target = next((x for x in dup["photos"] if x["path"] == rel), None)
+    target = _dup_cache_verify(rel)
+    if target is None:
+        dup = find_duplicates("saved")
+        target = next((x for x in dup["photos"] if x["path"] == rel), None)
     if target is None:
         return {"ok": False, "error": "not_duplicate"}
     remaining = target["dupCount"] - 1
     mtime = target["mtime"]
     p.unlink()
+    _dup_cache_remove(rel)
     _invalidate_folder_totals("saved")  # 收藏夹少了一张
     changed = False
     with _lock:
@@ -552,6 +675,7 @@ def move_photo(rel: str, dest_folder: str):
     new_rel = rel_of(dst, "saved")
     new_mtime = int(dst.stat().st_mtime)
     _invalidate_folder_totals("saved")
+    _dup_cache.pop("saved", None)  # 路径变了，重复结果缓存作废，下次进重复页重扫
     changed = False
     with _lock:
         if _state["viewed"].pop(viewed_key(rel, "saved"), None) is not None:
@@ -863,6 +987,7 @@ def _run_yandere_round():
           f"failed={stats['failed']} aborted={stats['aborted']}", flush=True)
     if stats.get("new"):
         _invalidate_folder_totals("photos")  # 新图进库了，文件夹张数缓存作废
+        _dup_cache.pop("photos", None)
     for folder in stats.get("new_folders", []):
         try:
             rel = str(Path(folder).relative_to(PHOTOS_DIR))
@@ -992,11 +1117,17 @@ class Handler(BaseHTTPRequestHandler):
                                 "warning": warning})
             elif u.path == "/api/duplicates":
                 # 跨目录找一模一样的照片（收藏夹「重复」视图用）：
-                # 同大小才算 SHA-256，哈希有缓存，几千张也快
+                # 同大小才算 SHA-256，哈希有缓存；30 秒内的扫描结果直接
+                # 复用，进页面不用等重扫，force=1 强制重扫（下拉刷新）
                 root = q.get("root", ["saved"])[0]
                 if root not in ("photos", "saved"):
                     raise ValueError("bad root")
-                self.send_json(find_duplicates(root))
+                entry = _dup_cache.get(root)
+                if (q.get("force", ["0"])[0] != "1" and entry
+                        and time.time() - entry["at"] <= _DUP_CACHE_TTL):
+                    self.send_json(entry["result"])
+                else:
+                    self.send_json(find_duplicates(root))
             elif u.path == "/api/folders":
                 # 某个根目录下的全部子目录（收藏夹移动照片时选目标用）
                 root = q.get("root", ["saved"])[0]
@@ -1110,6 +1241,7 @@ class Handler(BaseHTTPRequestHandler):
                     _state["saved"][rel] = f"{year_dir.name}/{dst.name}"
                     save_state()
                     _invalidate_folder_totals("saved")  # 收藏夹多了一张
+                    _dup_cache.pop("saved", None)
                 self.send_json({"ok": True, "already": False,
                                 "dest": f"{year_dir.name}/{dst.name}"})
             elif u.path == "/api/save-all":
@@ -1131,6 +1263,7 @@ class Handler(BaseHTTPRequestHandler):
                     save_state()
                     if copied:
                         _invalidate_folder_totals("saved")  # 收藏夹多了几张
+                        _dup_cache.pop("saved", None)
                 self.send_json({"ok": True, "copied": copied, "skipped": skipped})
             elif u.path == "/api/delete-duplicate":
                 # 重复视图里删多余副本：服务端现扫确认还在重复组里才删，

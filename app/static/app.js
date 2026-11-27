@@ -276,12 +276,13 @@ async function loadList() {
 
 // 重复视图的数据：服务端跨目录按内容哈希分组，返回已按组排好的照片。
 // 哈希有缓存，第一次可能要几秒（只算同大小候选），之后很快。
-async function loadDuplicates(announce = true) {
+async function loadDuplicates(announce = true, force = false) {
   if (root !== 'saved' || duplicateLoading) return false;
   duplicateLoading = true;
   renderGrid();
   try {
-    const data = await api('/api/duplicates?root=saved');
+    // force 只给下拉刷新：平时用服务端 30 秒内的扫描结果，进页面不重扫
+    const data = await api('/api/duplicates?root=saved' + (force ? '&force=1' : ''));
     duplicatePhotos = data.photos || [];
     duplicateStats = data;
     lastDuplicateFetchAt = Date.now();
@@ -1082,7 +1083,7 @@ document.addEventListener('touchend', async e => {
       try {
         if (duplicateMode) {
           // 重复视图下拉刷新就是重扫一遍；失败时 loadDuplicates 已弹提示
-          ptrText.textContent = (await loadDuplicates(false)) ? '✓ 已刷新' : '刷新失败';
+          ptrText.textContent = (await loadDuplicates(false, true)) ? '✓ 已刷新' : '刷新失败';
         } else {
           listCache.delete(cacheKey(folder));  // 下拉刷新要拉新的，不能用缓存
           await loadList();
