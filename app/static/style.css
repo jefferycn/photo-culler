@@ -155,13 +155,6 @@ body.drawer-open { overflow: hidden; }
   -webkit-touch-callout: none; user-select: none; -webkit-user-select: none; }
 .tile img { width: 100%; height: 100%; object-fit: cover; display: block;
   -webkit-touch-callout: none; -webkit-user-drag: none; pointer-events: none; }
-/* 收藏夹每张右上角的操作按钮（移动/删除）：点它出弹层，不用长按，
-   长按会撞上 iPhone 的图片菜单 */
-.tile .tile-act { position: absolute; top: 6px; right: 6px; z-index: 3;
-  width: 28px; height: 28px; border-radius: 50%; border: none; padding: 0;
-  background: rgba(0,0,0,.55); color: #fff; font-size: 18px; line-height: 1;
-  display: flex; align-items: center; justify-content: center; cursor: pointer; }
-.tile .tile-act:active { background: rgba(0,0,0,.8); }
 /* 重复视图：每张底部标它所在的目录，删之前先看清是哪一份 */
 .tile .dup-path { position: absolute; left: 0; right: 0; bottom: 0;
   padding: 14px 7px 5px; font-size: 11px; color: #eee; pointer-events: none;
@@ -176,10 +169,10 @@ body.drawer-open { overflow: hidden; }
 /* ---------- 提示气泡（要盖过看图器，所以 z-index 比 PhotoSwipe 高） ---------- */
 .toast { position: fixed; left: 50%; bottom: 76px; transform: translateX(-50%);
   background: #222; color: #eee; border: 1px solid #444; border-radius: 999px;
-  padding: 9px 18px; font-size: 14px; z-index: 3000; white-space: nowrap; }
+  padding: 9px 18px; font-size: 14px; z-index: 100002; white-space: nowrap; }
 
 /* ---------- 重复删除确认（底部弹层） ---------- */
-.sheet { position: fixed; inset: 0; z-index: 2500; background: rgba(0,0,0,.55);
+.sheet { position: fixed; inset: 0; z-index: 100001; background: rgba(0,0,0,.55);
   display: flex; align-items: flex-end; justify-content: center; }
 .sheet-panel { width: min(520px, 100%); background: #1c1c1e; color: #eee;
   border-top: 1px solid #333336; border-radius: 16px 16px 0 0;
@@ -217,6 +210,22 @@ body.drawer-open { overflow: hidden; }
   transition: width .25s ease; }
 .vp-dot { width: 8px; height: 8px; border-radius: 50%; background: #f5c518;
   box-shadow: 0 0 8px rgba(245,197,24,.9); flex-shrink: 0; }
+
+/* 看图器操作条：收藏夹里单击图片显示/隐藏，路径 + 移动/删除。
+   按钮够大，不用在列表页点小小的 ⋯ */
+.viewer-actions { position: absolute; left: 50%; transform: translateX(-50%);
+  bottom: calc(40px + env(safe-area-inset-bottom)); z-index: 35;
+  display: flex; align-items: center; gap: 8px; max-width: 94vw;
+  background: rgba(20,20,22,.88); border: 1px solid #3a3a3c;
+  border-radius: 999px; padding: 6px 6px 6px 14px; }
+.viewer-actions[hidden] { display: none; }
+.viewer-actions .va-path { font-size: 12px; color: #ccc; max-width: 38vw;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.viewer-actions button { border: 1px solid #3a3a3c; border-radius: 999px;
+  padding: 8px 16px; font-size: 14px; background: #262628; color: #eee;
+  white-space: nowrap; }
+.viewer-actions button.danger { background: #e5484d; border-color: #e5484d;
+  color: #fff; font-weight: 700; }
 
 /* ---------- 看图器：上滑保存的圆环进度 ---------- */
 /* 圆环就是进度条：拖多少顺时针填多少，同时微微长大、描边变粗；

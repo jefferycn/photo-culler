@@ -198,19 +198,6 @@ function renderGrid() {
       label.textContent = p.folder || '根目录';
       tile.appendChild(label);
     }
-    if (root === 'saved') {
-      // 收藏夹每张右上角一个操作按钮：移动到其他目录（重复视图里还能删）。
-      // 不用长按——长按会撞上 iPhone 的图片菜单
-      const act = document.createElement('button');
-      act.className = 'tile-act';
-      act.textContent = '⋯';
-      act.setAttribute('aria-label', '操作');
-      act.addEventListener('click', e => {
-        e.stopPropagation();
-        openActionSheet(p);
-      });
-      tile.appendChild(act);
-    }
     tile.addEventListener('click', () => openViewer(i));
     grid.appendChild(tile);
   }
@@ -290,7 +277,7 @@ async function loadDuplicates(announce = true, force = false) {
     renderGrid();
     if (announce) {
       toast(duplicatePhotos.length
-        ? `找到 ${data.duplicate_groups} 组重复，共 ${duplicatePhotos.length} 张 · 点 ⋯ 删除`
+        ? `找到 ${data.duplicate_groups} 组重复，共 ${duplicatePhotos.length} 张 · 点开图片操作`
         : '没有一模一样的图片');
     }
     return true;
@@ -432,6 +419,7 @@ async function doDelete(delBtn) {
     const r = await post('/api/delete-duplicate', { path: p.path });
     closeActionSheet();
     applyDuplicateDeletion(p);
+    if (viewerOpen && lightbox.pswp) lightbox.pswp.close();  // 删的是当前张，回列表
     toast(r.group_removed ? `已删除 ${p.path}，这组只剩一张` : `已删除 ${p.path}`);
   } catch (e) {
     closeActionSheet();
@@ -481,6 +469,7 @@ async function doMove(destFolder) {
     const r = await post('/api/move', { path: oldPath, destFolder });
     closeActionSheet();
     applyMove(oldPath, r);
+    if (viewerOpen && lightbox.pswp) lightbox.pswp.close();  // 移走了，回列表看新位置
     toast(`已移动到 ${r.to}`);
   } catch (e) {
     closeActionSheet();
@@ -1124,6 +1113,8 @@ const lightbox = new PhotoSwipeLightbox({
 });
 
 let progressEl = null, progressFill = null, progressDot = null, saveRingEl = null, saveRingFill = null;
+let viewerActionsEl = null, viewerActionsPath = null, viewerDeleteBtn = null;
+let lastViewerTapAt = 0;  // 双击缩放的第二下别把操作条又切回去
 let viewerOpen = false;  // 看图器是否开着：自己记，不依赖 lightbox.pswp.isOpen
 let viewerPhotos = [];   // 看图器打开那一刻的照片快照：看的过程中标记已看会改
                          // visiblePhotos() 的结果（筛“未看过”时列表会缩水），
@@ -1159,6 +1150,47 @@ function buildViewerOverlay() {
   saveRingFill = saveRingEl.querySelector('.sr-fill');
   saveRingFill.style.strokeDasharray = String(RING_C);
   saveRingFill.style.strokeDashoffset = String(RING_C);
+
+  // 操作条：收藏夹里单击图片显示/隐藏（路径 + 移动/删除）。
+  // 列表页的小 ⋯ 不好点，操作挪到看图器里，按钮够大。
+  // 条上的触摸别冒泡到看图器手势（点按钮不算点图片）
+  viewerActionsEl = document.createElement('div');
+  viewerActionsEl.className = 'viewer-actions';
+  viewerActionsEl.hidden = true;
+  const vaPath = document.createElement('span');
+  vaPath.className = 'va-path';
+  const moveBtn = document.createElement('button');
+  moveBtn.textContent = '移动';
+  moveBtn.addEventListener('click', () => {
+    const p = currentPhoto();
+    if (!p) return;
+    openActionSheet(p);
+    renderMovePicker();
+  });
+  viewerDeleteBtn = document.createElement('button');
+  viewerDeleteBtn.className = 'danger';
+  viewerDeleteBtn.textContent = '删除';
+  viewerDeleteBtn.addEventListener('click', () => {
+    const p = currentPhoto();
+    if (!p) return;
+    openActionSheet(p);
+    renderDeleteConfirm();
+  });
+  viewerActionsEl.appendChild(vaPath);
+  viewerActionsEl.appendChild(moveBtn);
+  viewerActionsEl.appendChild(viewerDeleteBtn);
+  for (const ev of ['touchstart', 'touchmove', 'touchend', 'pointerdown', 'pointerup', 'click']) {
+    viewerActionsEl.addEventListener(ev, e => e.stopPropagation());
+  }
+  lightbox.pswp.element.appendChild(viewerActionsEl);
+  viewerActionsPath = vaPath;
+}
+
+function toggleViewerActions() {
+  // 只在收藏夹里有操作条；照片库单击不做事（上滑保存手势不变）
+  if (root !== 'saved' || !viewerActionsEl) return;
+  viewerActionsEl.hidden = !viewerActionsEl.hidden;
+  if (!viewerActionsEl.hidden) syncViewerOverlay();
 }
 
 function syncViewerOverlay() {
@@ -1172,6 +1204,9 @@ function syncViewerOverlay() {
   // 收藏夹里不显示圆点：全是已保存的，再画就是噪音
   // 刚存下那一下圆点先别亮：等光点飞到了再亮（saveDotPending）
   progressDot.hidden = root === 'saved' || saveDotPending || !(p && p.saved);
+  if (viewerActionsPath) viewerActionsPath.textContent = p ? p.path : '';
+  // 删除只在重复视图里有；普通收藏夹只有移动
+  if (viewerDeleteBtn) viewerDeleteBtn.hidden = !duplicateMode;
 }
 
 // 上滑保存的圆环进度：拖动时圆环顺时针填满、微微长大、描边变粗；
@@ -1345,7 +1380,7 @@ function onViewerTouchStart(e) {
   }
   clearTimeout(viewerResetTimer);
   const t = e.changedTouches[0];
-  vTouch = { x: t.clientX, y: t.clientY, axis: null, samples: [{ t: e.timeStamp, y: t.clientY }] };
+  vTouch = { x: t.clientX, y: t.clientY, axis: null, t0: e.timeStamp, samples: [{ t: e.timeStamp, y: t.clientY }] };
 }
 function onViewerTouchMove(e) {
   const pswp = lightbox.pswp;
@@ -1411,6 +1446,11 @@ function onViewerTouchEnd(e) {
   const dy = t.clientY - vTouch.y;
   const axis = vTouch.axis;
   const vy = touchVelocityY();  // 先算速度：下面就把 vTouch 清掉了
+  // 单击：没定方向、位移小、时间短。双击缩放的第二下不算（350ms 内连点）
+  const isTap = !axis && Math.abs(dx) < 10 && Math.abs(dy) < 10 &&
+    e.timeStamp - (vTouch.t0 ?? e.timeStamp) < 300 &&
+    e.timeStamp - lastViewerTapAt >= 350;
+  if (isTap) lastViewerTapAt = e.timeStamp;
   vTouch = null;
   if (!pswp) return;
   const zoomed = viewerZoomed();
@@ -1435,6 +1475,7 @@ function onViewerTouchEnd(e) {
   // 其他情况：弹回原位
   resetViewerDrag();
   if (!zoomed && axis === 'y' && dy < -90) savePhoto(currentPhoto());  // 上滑：存下来
+  if (isTap) toggleViewerActions();  // 单击图片：显示/隐藏操作条（收藏夹里）
 }
 
 lightbox.on('afterInit', () => {
