@@ -75,15 +75,12 @@
 
 <div id="toast" class="toast" hidden></div>
 
-<div id="dup-sheet" class="sheet" hidden>
-  <div class="sheet-panel" role="dialog" aria-modal="true" aria-label="删除重复照片">
-    <div class="sheet-title">删除这张？</div>
-    <div class="sheet-path" id="dup-sheet-path"></div>
-    <div class="sheet-meta" id="dup-sheet-meta"></div>
-    <div class="sheet-actions">
-      <button id="dup-sheet-cancel">取消</button>
-      <button id="dup-sheet-delete" class="danger">删除这张</button>
-    </div>
+<div id="act-sheet" class="sheet" hidden>
+  <div class="sheet-panel" role="dialog" aria-modal="true" aria-label="照片操作">
+    <div class="sheet-title" id="act-sheet-title"></div>
+    <div class="sheet-path" id="act-sheet-path"></div>
+    <div class="sheet-meta" id="act-sheet-meta"></div>
+    <div id="act-sheet-body"></div>
   </div>
 </div>
 

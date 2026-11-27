@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Photo culler 1.0.7 — 在局域网里看 NAS 照片、加星、保存到指定目录。
+"""Photo culler 1.0.8 — 在局域网里看 NAS 照片、加星、保存到指定目录。
 
 用法（Docker，见 ../docker-compose.yml）或直接跑：
     PHOTOS_DIR=/path/to/photos DEST_DIR=/path/to/picks DATA_DIR=./data python3 server.py
@@ -43,7 +43,7 @@ DEST_DIR = Path(os.environ.get("DEST_DIR", "/dest")).resolve()
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data")).resolve()
 PORT = int(os.environ.get("PORT", "8080"))
 HOST = os.environ.get("HOST", "0.0.0.0")
-VERSION = "1.0.7"
+VERSION = "1.0.8"
 WARM_ON_START = os.environ.get("WARM_ON_START", "1") == "1"
 # yandere 抓图（v1.17）：原来 PHP 脚本 i.php 的逻辑，见 app/yandere.py。
 # 间隔默认 6 小时，全部可用 .env 控制；YANDERE_BASE_URL 只是测试用的覆盖
@@ -503,6 +503,92 @@ def delete_duplicate(rel: str):
             "group_removed": remaining == 1}
 
 
+def list_folders(root: str = "saved"):
+    """列出某个根目录下的全部子目录（相对路径，排序后返回）。
+    收藏夹「移动到其他目录」的目标列表用；隐藏/@ 目录不列。"""
+    base = root_base(root)
+    out = []
+    if not base.is_dir():
+        return out
+    stack = [base]
+    while stack:
+        d = stack.pop()
+        try:
+            entries = list(os.scandir(d))
+        except Exception:
+            continue
+        for e in entries:
+            if e.name.startswith((".", "@")):
+                continue
+            try:
+                if not e.is_dir(follow_symlinks=False):
+                    continue
+            except Exception:
+                continue
+            p = Path(e.path)
+            out.append(rel_of(p, root))
+            stack.append(p)
+    return sorted(out)
+
+
+def move_photo(rel: str, dest_folder: str):
+    """把收藏夹里的一张照片移到收藏夹的另一个目录（只在 DEST_DIR 内移动，
+    照片库源目录不碰）。重名自动加 -1、-2；已看/已保存记录、哈希、宽高和
+    缩略图缓存跟着新路径走。目标就是当前目录时返回 same_folder，不动文件。"""
+    global _dims_dirty
+    src = safe_rel(rel, "saved")
+    if not src.is_file() or not _is_photo(src, "saved"):
+        raise FileNotFoundError(rel)
+    dest_dir = safe_rel(dest_folder, "saved") if dest_folder else DEST_DIR
+    if not dest_dir.is_dir():
+        raise FileNotFoundError(dest_folder)
+    current = rel_of(src.parent, "saved") if src.parent != DEST_DIR else ""
+    if dest_folder == current:
+        return {"ok": False, "error": "same_folder"}
+    st = src.stat()
+    mtime = int(st.st_mtime)
+    dst = dedup_dest(dest_dir, src.name)
+    shutil.move(str(src), str(dst))
+    new_rel = rel_of(dst, "saved")
+    new_mtime = int(dst.stat().st_mtime)
+    _invalidate_folder_totals("saved")
+    changed = False
+    with _lock:
+        if _state["viewed"].pop(viewed_key(rel, "saved"), None) is not None:
+            _state["viewed"][viewed_key(new_rel, "saved")] = True
+            changed = True
+        for src_key, dest in list(_state["saved"].items()):
+            if dest == rel:
+                _state["saved"][src_key] = new_rel
+                changed = True
+        if _state.get("lastViewedSaved") == rel:
+            _state["lastViewedSaved"] = new_rel
+            changed = True
+        if changed:
+            save_state()
+    with _dup_lock:
+        cache = load_hash_cache()
+        ent = cache.get("saved", {}).pop(rel, None)
+        if (isinstance(ent, dict) and ent.get("size") == dst.stat().st_size
+                and ent.get("mtime") == new_mtime):
+            cache["saved"][new_rel] = ent
+        save_hash_cache()
+    old_dims_key = f"saved|{rel}|{mtime}"
+    if old_dims_key in _dims:
+        _dims[f"saved|{new_rel}|{new_mtime}"] = _dims.pop(old_dims_key)
+        _dims_dirty = True
+        save_dims_if_dirty()
+    for old_cache, new_cache in (
+            (thumb_path(rel, mtime, "saved"), thumb_path(new_rel, new_mtime, "saved")),
+            (preview_path(rel, mtime, "saved"), preview_path(new_rel, new_mtime, "saved"))):
+        try:
+            if old_cache.exists():
+                os.replace(old_cache, new_cache)
+        except Exception:
+            pass
+    return {"ok": True, "from": rel, "to": new_rel, "destFolder": dest_folder}
+
+
 def image_size(p: Path):
     if Image is None:
         return None
@@ -911,6 +997,12 @@ class Handler(BaseHTTPRequestHandler):
                 if root not in ("photos", "saved"):
                     raise ValueError("bad root")
                 self.send_json(find_duplicates(root))
+            elif u.path == "/api/folders":
+                # 某个根目录下的全部子目录（收藏夹移动照片时选目标用）
+                root = q.get("root", ["saved"])[0]
+                if root not in ("photos", "saved"):
+                    raise ValueError("bad root")
+                self.send_json({"folders": list_folders(root)})
             elif u.path == "/api/dims":
                 rel = q.get("path", [""])[0]
                 root = q.get("root", ["photos"])[0]
@@ -1045,6 +1137,11 @@ class Handler(BaseHTTPRequestHandler):
                 # 最后一张拒绝（409），删不掉唯一的那份
                 body = self.read_json()
                 result = delete_duplicate(body["path"])
+                self.send_json(result, 200 if result["ok"] else 409)
+            elif u.path == "/api/move":
+                # 收藏夹内移动：只在 DEST_DIR 里换目录，源目录不碰
+                body = self.read_json()
+                result = move_photo(body["path"], body.get("destFolder", ""))
                 self.send_json(result, 200 if result["ok"] else 409)
             elif u.path == "/api/clean-thumbs":
                 # 手动清一次孤儿缩略图/预览图（NAS 上删了文件夹/照片后），

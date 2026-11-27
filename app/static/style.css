@@ -154,7 +154,14 @@ body.drawer-open { overflow: hidden; }
   background: #1e1e20; cursor: pointer;
   -webkit-touch-callout: none; user-select: none; -webkit-user-select: none; }
 .tile img { width: 100%; height: 100%; object-fit: cover; display: block;
-  -webkit-touch-callout: none; }
+  -webkit-touch-callout: none; -webkit-user-drag: none; pointer-events: none; }
+/* 收藏夹每张右上角的操作按钮（移动/删除）：点它出弹层，不用长按，
+   长按会撞上 iPhone 的图片菜单 */
+.tile .tile-act { position: absolute; top: 6px; right: 6px; z-index: 3;
+  width: 28px; height: 28px; border-radius: 50%; border: none; padding: 0;
+  background: rgba(0,0,0,.55); color: #fff; font-size: 18px; line-height: 1;
+  display: flex; align-items: center; justify-content: center; cursor: pointer; }
+.tile .tile-act:active { background: rgba(0,0,0,.8); }
 /* 重复视图：每张底部标它所在的目录，删之前先看清是哪一份 */
 .tile .dup-path { position: absolute; left: 0; right: 0; bottom: 0;
   padding: 14px 7px 5px; font-size: 11px; color: #eee; pointer-events: none;
@@ -176,6 +183,7 @@ body.drawer-open { overflow: hidden; }
   display: flex; align-items: flex-end; justify-content: center; }
 .sheet-panel { width: min(520px, 100%); background: #1c1c1e; color: #eee;
   border-top: 1px solid #333336; border-radius: 16px 16px 0 0;
+  max-height: 86vh; overflow-y: auto;
   padding: 18px 16px calc(16px + env(safe-area-inset-bottom)); }
 .sheet-title { font-size: 16px; font-weight: 700; margin-bottom: 8px; }
 .sheet-path { font-size: 14px; color: #f5c518; word-break: break-all;
@@ -187,6 +195,13 @@ body.drawer-open { overflow: hidden; }
 .sheet-actions button.danger { background: #e5484d; border-color: #e5484d;
   color: #fff; font-weight: 700; }
 .sheet-actions button:disabled { opacity: .55; }
+/* 移动目标目录列表：一行一个目录，点哪行移哪行 */
+.sheet-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+.sheet-list button { text-align: left; border: 1px solid #333336;
+  border-radius: 10px; padding: 11px 12px; font-size: 15px;
+  background: #262628; color: #eee; word-break: break-all; }
+.sheet-list button:active { background: #333336; }
+.sheet-list .sheet-empty { font-size: 14px; color: #888; padding: 8px 2px; }
 
 /* ---------- 看图器：底部进度条 + 已保存圆点 ---------- */
 /* 看图器顶部没有任何按钮了（上滑保存、下滑关闭），底部只留这一条指示 */
