@@ -10,6 +10,13 @@ const ptrEl = document.getElementById('ptr');
 const ptrText = document.getElementById('ptr-text');
 const filtersEl = document.querySelector('.filters');
 const dupBtn = document.getElementById('dupBtn');
+const dupSheet = document.getElementById('dup-sheet');
+const dupSheetPath = document.getElementById('dup-sheet-path');
+const dupSheetMeta = document.getElementById('dup-sheet-meta');
+const dupSheetDelete = document.getElementById('dup-sheet-delete');
+const dupSheetCancel = document.getElementById('dup-sheet-cancel');
+let dupSheetPhoto = null;      // 删除确认弹层正指着哪张
+let suppressTileClickUntil = 0;  // 长按松手后的那次 click 不算点开看图器
 const pageContent = document.getElementById('page-content');
 const backHint = document.getElementById('back-hint');
 
@@ -185,7 +192,36 @@ function renderGrid() {
     // 状态只用颜色表示，不加字：看过变灰（图片变暗）、保存过描绿边
     tile.innerHTML =
       `<img loading="lazy" src="/api/thumb?path=${enc(p.path)}&root=${root}" alt="">`;
-    tile.addEventListener('click', () => openViewer(i));
+    if (duplicateMode) {
+      // 重复的图长得一模一样，底部标目录才分得清是哪一份
+      const label = document.createElement('span');
+      label.className = 'dup-path';
+      label.textContent = p.folder || '根目录';
+      tile.appendChild(label);
+      // 长按出删除确认（先看清完整路径再删）；短按还是打开看图器
+      let pressTimer = null;
+      let pressX = 0, pressY = 0;
+      const cancelPress = () => { clearTimeout(pressTimer); pressTimer = null; };
+      tile.addEventListener('pointerdown', e => {
+        pressX = e.clientX; pressY = e.clientY;
+        cancelPress();
+        pressTimer = setTimeout(() => {
+          suppressTileClickUntil = Date.now() + 700;
+          openDupSheet(p);
+        }, 520);
+      });
+      tile.addEventListener('pointermove', e => {
+        if (Math.abs(e.clientX - pressX) > 10 || Math.abs(e.clientY - pressY) > 10) cancelPress();
+      });
+      tile.addEventListener('pointerup', cancelPress);
+      tile.addEventListener('pointercancel', cancelPress);
+      tile.addEventListener('pointerleave', cancelPress);
+      tile.addEventListener('contextmenu', e => e.preventDefault());
+    }
+    tile.addEventListener('click', () => {
+      if (Date.now() < suppressTileClickUntil) return;
+      openViewer(i);
+    });
     grid.appendChild(tile);
   }
   refreshCounts();
@@ -263,7 +299,7 @@ async function loadDuplicates(announce = true) {
     renderGrid();
     if (announce) {
       toast(duplicatePhotos.length
-        ? `找到 ${data.duplicate_groups} 组重复，共 ${duplicatePhotos.length} 张`
+        ? `找到 ${data.duplicate_groups} 组重复，共 ${duplicatePhotos.length} 张 · 长按删除`
         : '没有一模一样的图片');
     }
     return true;
@@ -274,6 +310,80 @@ async function loadDuplicates(announce = true) {
     return false;
   }
 }
+
+// ---------- 重复删除：长按一张，先看清路径再确认 ----------
+function openDupSheet(p) {
+  dupSheetPhoto = p;
+  dupSheetPath.textContent = p.path;
+  const left = (p.dupCount || 2) - 1;
+  dupSheetMeta.textContent =
+    `目录：${p.folder || '根目录'} · ${fmtBytes(p.size)} · 同组共 ${p.dupCount} 张` +
+    (left === 1 ? ' · 删后这组只剩 1 张，会从重复里去掉' : ` · 删后还剩 ${left} 张`);
+  dupSheetDelete.disabled = false;
+  dupSheetDelete.textContent = '删除这张';
+  dupSheet.hidden = false;
+}
+function closeDupSheet() {
+  dupSheet.hidden = true;
+  dupSheetPhoto = null;
+}
+dupSheetCancel.addEventListener('click', closeDupSheet);
+dupSheet.addEventListener('click', e => { if (e.target === dupSheet) closeDupSheet(); });
+
+// 删掉的照片从目录列表和缓存里也拿掉，切回「全部」不会又冒出来；
+// 文件夹张数顺手减一（祖先目录的递归张数都减）
+function removeDeletedPhotoEverywhere(p) {
+  allPhotos = allPhotos.filter(q => q.path !== p.path);
+  for (const [key, data] of listCache) {
+    if (!key.startsWith('saved:')) continue;
+    data.photos = (data.photos || []).filter(q => q.path !== p.path);
+    for (const f of data.folders || []) {
+      if (p.path.startsWith(f.path + '/')) {
+        f.count = Math.max(0, (f.count || 0) - 1);
+        if (p.viewed) f.viewed = Math.max(0, (f.viewed || 0) - 1);
+      }
+    }
+  }
+  if (lastViewed === p.path) lastViewed = null;
+}
+function applyDuplicateDeletion(p) {
+  const group = p.dupGroup;
+  duplicatePhotos = duplicatePhotos.filter(q => q.path !== p.path);
+  removeDeletedPhotoEverywhere(p);
+  const remaining = duplicatePhotos.filter(q => q.dupGroup === group);
+  if (remaining.length === 1) {
+    // 只剩一张就不是重复了，从重复视图里去掉（文件本身留着）
+    duplicatePhotos = duplicatePhotos.filter(q => q.path !== remaining[0].path);
+  } else {
+    for (const q of remaining) q.dupCount = remaining.length;
+  }
+  if (duplicateStats) {
+    duplicateStats.duplicate_photos = duplicatePhotos.length;
+    duplicateStats.duplicate_groups =
+      new Set(duplicatePhotos.map(q => q.dupGroup)).size;
+  }
+  renderGrid();
+}
+dupSheetDelete.addEventListener('click', async () => {
+  const p = dupSheetPhoto;
+  if (!p) return;
+  dupSheetDelete.disabled = true;
+  dupSheetDelete.textContent = '删除中…';
+  try {
+    const r = await post('/api/delete-duplicate', { path: p.path });
+    closeDupSheet();
+    applyDuplicateDeletion(p);
+    toast(r.group_removed ? `已删除 ${p.path}，这组只剩一张` : `已删除 ${p.path}`);
+  } catch (e) {
+    closeDupSheet();
+    if (e.message === '409' || e.message === '404') {
+      toast('这张已经不是重复了，刷新一下');
+      loadDuplicates(false);
+    } else {
+      toast('删除失败，请重试');
+    }
+  }
+});
 
 // 后台刷新当前目录：只看结构变没变（文件夹、照片有没有增减），
 // 已保存/已看这些状态本地已经是对的，不参与比较；

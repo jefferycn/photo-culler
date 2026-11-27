@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Photo culler 1.0.6 — 在局域网里看 NAS 照片、加星、保存到指定目录。
+"""Photo culler 1.0.7 — 在局域网里看 NAS 照片、加星、保存到指定目录。
 
 用法（Docker，见 ../docker-compose.yml）或直接跑：
     PHOTOS_DIR=/path/to/photos DEST_DIR=/path/to/picks DATA_DIR=./data python3 server.py
@@ -43,7 +43,7 @@ DEST_DIR = Path(os.environ.get("DEST_DIR", "/dest")).resolve()
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data")).resolve()
 PORT = int(os.environ.get("PORT", "8080"))
 HOST = os.environ.get("HOST", "0.0.0.0")
-VERSION = "1.0.6"
+VERSION = "1.0.7"
 WARM_ON_START = os.environ.get("WARM_ON_START", "1") == "1"
 # yandere 抓图（v1.17）：原来 PHP 脚本 i.php 的逻辑，见 app/yandere.py。
 # 间隔默认 6 小时，全部可用 .env 控制；YANDERE_BASE_URL 只是测试用的覆盖
@@ -457,6 +457,50 @@ def find_duplicates(root: str = "saved"):
             "errors": errors,
             "elapsed_ms": int((time.time() - started) * 1000),
         }
+
+
+def delete_duplicate(rel: str):
+    """删掉收藏夹里一张多余的重复照片。删之前现扫一遍确认它还在重复组里：
+    组里只剩一张（或已经不是重复）就拒绝，最后一张永远删不掉。
+    删完顺手剪掉它的已看/已保存记录、哈希缓存和缩略图缓存，
+    不用等每日清理。"""
+    p = safe_rel(rel, "saved")
+    if not p.is_file() or not _is_photo(p, "saved"):
+        raise FileNotFoundError(rel)
+    dup = find_duplicates("saved")
+    target = next((x for x in dup["photos"] if x["path"] == rel), None)
+    if target is None:
+        return {"ok": False, "error": "not_duplicate"}
+    remaining = target["dupCount"] - 1
+    mtime = target["mtime"]
+    p.unlink()
+    _invalidate_folder_totals("saved")  # 收藏夹少了一张
+    changed = False
+    with _lock:
+        if _state["viewed"].pop(viewed_key(rel, "saved"), None) is not None:
+            changed = True
+        for src, dest in list(_state["saved"].items()):
+            if dest == rel:
+                _state["saved"].pop(src, None)
+                changed = True
+        if _state.get("lastViewedSaved") == rel:
+            _state["lastViewedSaved"] = None
+            changed = True
+        if changed:
+            save_state()
+    with _dup_lock:
+        cache = load_hash_cache()
+        if cache.get("saved", {}).pop(rel, None) is not None:
+            save_hash_cache()
+    for cache_file in (thumb_path(rel, mtime, "saved"),
+                       preview_path(rel, mtime, "saved")):
+        try:
+            cache_file.unlink()
+        except Exception:
+            pass
+    return {"ok": True, "deleted": rel,
+            "remaining_in_group": remaining,
+            "group_removed": remaining == 1}
 
 
 def image_size(p: Path):
@@ -996,6 +1040,12 @@ class Handler(BaseHTTPRequestHandler):
                     if copied:
                         _invalidate_folder_totals("saved")  # 收藏夹多了几张
                 self.send_json({"ok": True, "copied": copied, "skipped": skipped})
+            elif u.path == "/api/delete-duplicate":
+                # 重复视图里删多余副本：服务端现扫确认还在重复组里才删，
+                # 最后一张拒绝（409），删不掉唯一的那份
+                body = self.read_json()
+                result = delete_duplicate(body["path"])
+                self.send_json(result, 200 if result["ok"] else 409)
             elif u.path == "/api/clean-thumbs":
                 # 手动清一次孤儿缩略图/预览图（NAS 上删了文件夹/照片后），
                 # 返回删了几个、留了几个、释放了多少字节；启动后和每天也会自动清

@@ -75,6 +75,18 @@
 
 <div id="toast" class="toast" hidden></div>
 
+<div id="dup-sheet" class="sheet" hidden>
+  <div class="sheet-panel" role="dialog" aria-modal="true" aria-label="删除重复照片">
+    <div class="sheet-title">删除这张？</div>
+    <div class="sheet-path" id="dup-sheet-path"></div>
+    <div class="sheet-meta" id="dup-sheet-meta"></div>
+    <div class="sheet-actions">
+      <button id="dup-sheet-cancel">取消</button>
+      <button id="dup-sheet-delete" class="danger">删除这张</button>
+    </div>
+  </div>
+</div>
+
 <script>
   // 启动自检：如果主脚本 4 秒内没跑起来（比如浏览器缓存了旧文件导致加载失败），
   // 直接在页面上把原因写出来，而不是静悄悄一片空白。
