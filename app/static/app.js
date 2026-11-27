@@ -1114,7 +1114,7 @@ const lightbox = new PhotoSwipeLightbox({
 
 let progressEl = null, progressFill = null, progressDot = null, saveRingEl = null, saveRingFill = null;
 let viewerActionsEl = null, viewerActionsPath = null, viewerDeleteBtn = null;
-let lastViewerTapAt = 0;  // 双击缩放的第二下别把操作条又切回去
+let viewerTapTimer = null;  // 单击先等 280ms：等到第二下就是双击，不触发单击
 let viewerOpen = false;  // 看图器是否开着：自己记，不依赖 lightbox.pswp.isOpen
 let viewerPhotos = [];   // 看图器打开那一刻的照片快照：看的过程中标记已看会改
                          // visiblePhotos() 的结果（筛“未看过”时列表会缩水），
@@ -1375,6 +1375,7 @@ function onViewerTouchStart(e) {
   if (e.touches.length > 1) {
     viewerPinching = true;
     vTouch = null;
+    clearTimeout(viewerTapTimer); viewerTapTimer = null;
     resetViewerDragInstant();
     return;
   }
@@ -1388,13 +1389,21 @@ function onViewerTouchMove(e) {
   if (e.touches.length !== 1) {  // 第二根手指落下：捏合开始，取消竖直拖动
     viewerPinching = true;
     vTouch = null;
+    clearTimeout(viewerTapTimer); viewerTapTimer = null;
     resetViewerDragInstant();
     return;
   }
-  if (viewerZoomed()) return;  // 放大看细节时竖直拖动是平移图片，PhotoSwipe 自己处理
+  if (viewerZoomed()) {  // 放大看细节时竖直拖动是平移图片，PhotoSwipe 自己处理
+    clearTimeout(viewerTapTimer); viewerTapTimer = null;
+    return;
+  }
   const t = e.changedTouches[0];
   const dx = t.clientX - vTouch.x;
   const dy = t.clientY - vTouch.y;
+  // 动起来了就不是单击：取消等着的单击（比如点一下紧接着滑动）
+  if (Math.abs(dx) >= 10 || Math.abs(dy) >= 10) {
+    clearTimeout(viewerTapTimer); viewerTapTimer = null;
+  }
   vTouch.samples.push({ t: e.timeStamp, y: t.clientY });
   while (vTouch.samples.length > 1 && e.timeStamp - vTouch.samples[0].t > 100) vTouch.samples.shift();
   if (!vTouch.axis) {
@@ -1446,11 +1455,10 @@ function onViewerTouchEnd(e) {
   const dy = t.clientY - vTouch.y;
   const axis = vTouch.axis;
   const vy = touchVelocityY();  // 先算速度：下面就把 vTouch 清掉了
-  // 单击：没定方向、位移小、时间短。双击缩放的第二下不算（350ms 内连点）
+  // 单击：没定方向、位移小、时间短。先等 280ms 再执行：
+  // 等到第二下就是双击（缩放交给 PhotoSwipe），单击取消
   const isTap = !axis && Math.abs(dx) < 10 && Math.abs(dy) < 10 &&
-    e.timeStamp - (vTouch.t0 ?? e.timeStamp) < 300 &&
-    e.timeStamp - lastViewerTapAt >= 350;
-  if (isTap) lastViewerTapAt = e.timeStamp;
+    e.timeStamp - (vTouch.t0 ?? e.timeStamp) < 300;
   vTouch = null;
   if (!pswp) return;
   const zoomed = viewerZoomed();
@@ -1475,7 +1483,17 @@ function onViewerTouchEnd(e) {
   // 其他情况：弹回原位
   resetViewerDrag();
   if (!zoomed && axis === 'y' && dy < -90) savePhoto(currentPhoto());  // 上滑：存下来
-  if (isTap) toggleViewerActions();  // 单击图片：显示/隐藏操作条（收藏夹里）
+  if (isTap) {
+    if (viewerTapTimer) {
+      clearTimeout(viewerTapTimer);  // 第二下到了：这是双击，单击不执行
+      viewerTapTimer = null;
+    } else {
+      viewerTapTimer = setTimeout(() => {
+        viewerTapTimer = null;
+        if (viewerOpen) toggleViewerActions();  // 单击图片：显示/隐藏操作条
+      }, 280);
+    }
+  }
 }
 
 lightbox.on('afterInit', () => {

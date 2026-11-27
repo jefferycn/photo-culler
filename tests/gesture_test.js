@@ -406,46 +406,57 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     assert.strictEqual(S.lastViewed, 'a.jpg');
   });
 
-  // T20：收藏夹里单击图片（小位移、短时间）显示操作条，再单击隐藏；
-  // 350ms 内的第二下（双击缩放）不把操作条切回去
+  // T20：收藏夹里单击图片（小位移、短时间）等 280ms 后显示操作条，再单击隐藏；
+  // 双击（280ms 内第二下）取消单击，不显示操作条（缩放交给 PhotoSwipe）
   vm.runInContext(`
     root = 'saved';
+    viewerOpen = true;  // T19 关过看图器，这里重新打开
     viewerActionsEl.hidden = true;
     touch('start', 195, 400, 20000, oneTouch(195, 400));
     touch('end', 197, 402, 20100, noTouch());
   `, sandbox);
-  check('T20 tap shows viewer actions in favorites', () => {
-    assert.strictEqual(S.T.viewerActionsEl.hidden, false);
+  check('T20 tap does not toggle immediately', () => {
+    assert.strictEqual(S.T.viewerActionsEl.hidden, true);
   });
-  vm.runInContext(`
-    touch('start', 195, 400, 20200, oneTouch(195, 400));
-    touch('end', 195, 400, 20280, noTouch());
-  `, sandbox);
-  check('T20b second tap within 350ms does not toggle back', () => {
+  await sleep(330);
+  check('T20b tap shows viewer actions after double-tap window', () => {
     assert.strictEqual(S.T.viewerActionsEl.hidden, false);
   });
   vm.runInContext(`
     touch('start', 195, 400, 21000, oneTouch(195, 400));
     touch('end', 195, 400, 21100, noTouch());
+    touch('start', 195, 400, 21200, oneTouch(195, 400));
+    touch('end', 195, 400, 21280, noTouch());
   `, sandbox);
-  check('T20c later tap hides viewer actions', () => {
+  await sleep(330);
+  check('T20c double tap does not toggle viewer actions', () => {
+    assert.strictEqual(S.T.viewerActionsEl.hidden, false);
+  });
+  vm.runInContext(`
+    touch('start', 195, 400, 22000, oneTouch(195, 400));
+    touch('end', 195, 400, 22100, noTouch());
+  `, sandbox);
+  await sleep(330);
+  check('T20d later single tap hides viewer actions', () => {
     assert.strictEqual(S.T.viewerActionsEl.hidden, true);
   });
 
   // T21：照片库单击不显示操作条；长按（>300ms）也不算单击
   vm.runInContext(`
     root = 'photos';
-    touch('start', 195, 400, 22000, oneTouch(195, 400));
-    touch('end', 195, 400, 22100, noTouch());
+    touch('start', 195, 400, 23000, oneTouch(195, 400));
+    touch('end', 195, 400, 23100, noTouch());
   `, sandbox);
+  await sleep(330);
   check('T21 tap in photos root does nothing', () => {
     assert.strictEqual(S.T.viewerActionsEl.hidden, true);
   });
   vm.runInContext(`
     root = 'saved';
-    touch('start', 195, 400, 23000, oneTouch(195, 400));
-    touch('end', 195, 400, 23400, noTouch());
+    touch('start', 195, 400, 24000, oneTouch(195, 400));
+    touch('end', 195, 400, 24400, noTouch());
   `, sandbox);
+  await sleep(330);
   check('T21b long press is not a tap', () => {
     assert.strictEqual(S.T.viewerActionsEl.hidden, true);
   });
